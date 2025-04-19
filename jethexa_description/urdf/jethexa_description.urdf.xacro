@@ -48,10 +48,10 @@
                     <color rgba="0.4 0.9 0.4 1" />
                 </material>
             </visual>
-            <collision>
+            <collision name="coxa_collision_${side}${position}">
                 <origin xyz="0.02 0.0 0.0" rpy="0.0 ${my_pi/2} 0.0" />
                 <geometry>
-		    <cylinder radius="0.01" length="${coxa_length}"/>
+		            <cylinder radius="0.01" length="${coxa_length}"/>
                 </geometry>
             </collision>
             <inertial>
@@ -79,10 +79,10 @@
                     <color rgba="0.2 0.2 0.2 1" />
                 </material>
             </visual>
-            <collision>
+            <collision name="femur_collision_${side}${position}">
                 <origin xyz="${femur_length/2} 0.0 0.0" rpy="0.0 ${my_pi/2} 0.0" />
                 <geometry>
-		    <cylinder radius="0.01" length="${femur_length}"/>
+		            <cylinder radius="0.01" length="${femur_length}"/>
                 </geometry>
             </collision>
             <inertial>
@@ -115,7 +115,7 @@
             <collision name="tibia_collision_${side}${position}">
                 <origin xyz="${tibia_length/2} 0.0 0.0" rpy="0.0 ${my_pi/2} 0.0"/>
                 <geometry>
-		    <cylinder radius="0.01" length="${tibia_length}"/>
+		            <cylinder radius="0.01" length="${tibia_length}"/>
                 </geometry>
             </collision>
             <inertial>
