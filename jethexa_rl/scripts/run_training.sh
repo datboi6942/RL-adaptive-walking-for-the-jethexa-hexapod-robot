@@ -7,14 +7,21 @@ CATKIN_WS=$(realpath "$(dirname "$0")/../../..")
 source "$CATKIN_WS/devel/setup.bash"
 export PYTHONPATH="$CATKIN_WS/devel/lib/python2.7/dist-packages:$PYTHONPATH"
 
+# Define colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}=== JetHexa RL Training Launcher ===${NC}"
 # --- START: Forceful Cleanup ---
-echo -e "${YELLOW}Attempting to kill previous processes...${NC}"
-pkill -f gzserver
-pkill -f gzclient
-pkill -f rosmaster
-pkill -f gym_bridge_ros.py
-pkill -f train_ppo.py
-sleep 2 # Give processes time to die
+echo -e "${YELLOW}Attempting to kill previous potentially conflicting processes...${NC}"
+pkill -f gzserver > /dev/null 2>&1
+pkill -f gzclient > /dev/null 2>&1
+pkill -f rosmaster > /dev/null 2>&1
+pkill -f gym_bridge_ros.py > /dev/null 2>&1
+pkill -f train_ppo.py > /dev/null 2>&1
+sleep 1 # Give processes a moment to die
 echo -e "${YELLOW}Cleanup attempt finished.${NC}"
 # --- END: Forceful Cleanup ---
 
@@ -23,32 +30,12 @@ echo -e "${YELLOW}Cleanup attempt finished.${NC}"
 CATKIN_WS=$(realpath "$(dirname "$0")/../../..")
 source $CATKIN_WS/devel/setup.bash
 
-# Define colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== JetHexa RL Training Launcher ===${NC}"
 echo "This script will start both the Gazebo simulation (Python 2) and training (Python 3)"
 echo
 
-# --- REMOVE Default paths - Loading requires explicit arguments or --new for fresh start ---
-# Default paths for fine-tuning from ~143k steps
-# DEFAULT_MODEL_PATH="/catkin_ws/models/jethexa_ppo_20250416_214749/ppo_jethexa_143360_steps.zip"
-# DEFAULT_VECNORM_PATH="/catkin_ws/models/jethexa_ppo_20250416_214749/vec_normalize_143360_steps.pkl"
-# Use the correct path within /catkin_ws, including /src/
-# DEFAULT_MODEL_PATH="$CATKIN_WS/ppo_jethexa_280000_steps.zip" # <<< UPDATED: Load from 280k steps
-# DEFAULT_VECNORM_PATH="$CATKIN_WS/ppo_jethexa_280000_steps_vecnormalize.pkl" # <<< UPDATED: Load from 280k steps
+# Default timesteps
 DEFAULT_TIMESTEPS=1000000 # Keep default timesteps
-
-# --- Debug path check (Removed references to default model paths) ---
-echo "DEBUG: CATKIN_WS is set to: $CATKIN_WS"
-# echo "DEBUG: Checking Model Path: $DEFAULT_MODEL_PATH"
-# ls -l "$DEFAULT_MODEL_PATH"
-# echo "DEBUG: Checking VecNorm Path: $DEFAULT_VECNORM_PATH"
-# ls -l "$DEFAULT_VECNORM_PATH"
-# --- End Debug --- 
 
 # Check for script executability
 if [ ! -x "$(realpath "$0")" ]; then
@@ -138,32 +125,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- REMOVE Default Loading Logic Entirely ---
-# Add default loading args ONLY if user didn't provide them
-# --- RE-ENABLE default loading for resuming training ---
-#  echo "DEBUG: USER_PROVIDED_LOAD_MODEL=$USER_PROVIDED_LOAD_MODEL"
-#  echo "DEBUG: USER_PROVIDED_LOAD_VECNORM=$USER_PROVIDED_LOAD_VECNORM"
-#  if [ "$USER_PROVIDED_LOAD_MODEL" = false ]; then
-#      if [ -f "$DEFAULT_MODEL_PATH" ]; then
-#          echo -e "${YELLOW}Using default model path: $DEFAULT_MODEL_PATH${NC}"
-#          TRAIN_ARGS_LIST+=("--load-model" "$DEFAULT_MODEL_PATH")
-#      else
-#          # Adjusted Error Message
-#          echo -e "${RED}Default model path not found, not adding --load-model: '$DEFAULT_MODEL_PATH' ${NC}"
-#      fi
-#  fi
-#  if [ "$USER_PROVIDED_LOAD_VECNORM" = false ]; then
-#      if [ -f "$DEFAULT_VECNORM_PATH" ]; then
-#          echo -e "${YELLOW}Using default VecNormalize path: $DEFAULT_VECNORM_PATH${NC}"
-#          TRAIN_ARGS_LIST+=("--load-vecnormalize" "$DEFAULT_VECNORM_PATH")
-#      else
-#          # Adjusted Error Message
-#          echo -e "${RED}Default VecNormalize path not found, not adding --load-vecnormalize: '$DEFAULT_VECNORM_PATH' ${NC}"
-#      fi
-#  fi
-# --- End Re-enable ---
-# --- END REMOVAL ---
-
 # --- Handle --new flag: Remove loading args if present ---
 if [ "$START_FRESH" = true ]; then
     echo -e "${YELLOW}--new flag detected. Starting fresh training. Ignoring any --load-model or --load-vecnormalize arguments.${NC}"
@@ -222,40 +183,63 @@ else
 fi
 # --- END Default Loading --- 
 
+# <<< ADD Explicit Learning Rate for Fine-tuning >>>
+TRAIN_ARGS_LIST+=("--learning-rate" "3e-5")
+echo -e "${YELLOW}Explicitly setting learning rate for fine-tuning: 3e-5${NC}"
+# <<< END ADD >>>
+
 # Convert array back to string for logging, properly quoted
 TRAIN_ARGS=$(printf "'%s' " "${TRAIN_ARGS_LIST[@]}")
 
 echo -e "${YELLOW}ROS Launch Args: $LAUNCH_ARGS${NC}"
 echo -e "${YELLOW}Training Script Args: $TRAIN_ARGS${NC}"
 
-# Function to handle SIGINT
-cleanup() {
-    echo -e "\n${YELLOW}Shutting down processes...${NC}"
-    
-    # Kill Gazebo and ROS nodes
-    if [ -n "$GAZEBO_PID" ]; then
-        echo -e "${YELLOW}Stopping Gazebo (roslaunch process)...${NC}"
-        kill -INT $GAZEBO_PID 2>/dev/null
-    fi
-    
-    # Kill roscore explicitly IF IT'S RUNNING, regardless of who started it
-    if pgrep -x "rosmaster" > /dev/null; then
-        echo -e "${YELLOW}Stopping rosmaster...${NC}"
-        pkill -f rosmaster
-    fi
-    
-    # Add specific kills for nodes known to linger
-    echo -e "${YELLOW}Performing additional cleanup...${NC}"
-    pkill -f gzserver
-    pkill -f gzclient
-    pkill -f gym_bridge_ros.py
-    pkill -f train_ppo.py
+# Initialize PIDs
+GAZEBO_PID=""
+TRAIN_PID=""
 
-    echo -e "${GREEN}Cleanup complete${NC}"
-    exit 0
+# --- MODIFIED Cleanup Function ---
+function cleanup {
+  echo -e "${YELLOW}Caught SIGINT/SIGTERM, shutting down processes...${NC}"
+  # Send SIGINT first for graceful shutdown attempt to process groups
+  if [ -n "$GAZEBO_PID" ] && ps -p $GAZEBO_PID > /dev/null; then
+      echo "Sending SIGINT to roslaunch process group (-$GAZEBO_PID)..."
+      kill -INT -$GAZEBO_PID 2>/dev/null
+  fi
+  if [ -n "$TRAIN_PID" ] && ps -p $TRAIN_PID > /dev/null; then
+       echo "Sending SIGINT to training process group (-$TRAIN_PID)..."
+       kill -INT -$TRAIN_PID 2>/dev/null
+       # Consider direct PID kill as fallback: kill -INT $TRAIN_PID 2>/dev/null
+  fi
+
+  # Wait a moment for graceful shutdown
+  sleep 2
+
+  # Force kill (SIGKILL) if they are still running
+  echo "Checking if processes need force kill..."
+  if [ -n "$GAZEBO_PID" ] && ps -p $GAZEBO_PID > /dev/null; then
+      echo "Force killing roslaunch process group (-$GAZEBO_PID)..."
+      kill -KILL -$GAZEBO_PID 2>/dev/null
+  fi
+  if [ -n "$TRAIN_PID" ] && ps -p $TRAIN_PID > /dev/null; then
+       echo "Force killing training process group (-$TRAIN_PID)..."
+       kill -KILL -$TRAIN_PID 2>/dev/null
+       # Consider direct PID kill as fallback: kill -KILL $TRAIN_PID 2>/dev/null
+  fi
+
+  # Additional forceful cleanup for common ROS/Gazebo processes
+  echo "Performing additional cleanup (pkill)..."
+  pkill -SIGKILL -f gzserver > /dev/null 2>&1
+  pkill -SIGKILL -f gzclient > /dev/null 2>&1
+  pkill -SIGKILL -f gym_bridge_ros.py > /dev/null 2>&1
+  pkill -SIGKILL -f train_ppo.py > /dev/null 2>&1 # Redundant but safe
+  pkill -SIGKILL -f rosmaster > /dev/null 2>&1
+
+  echo -e "${GREEN}Shutdown complete.${NC}"
+  exit 0 # Exit script after cleanup
 }
+# --- END MODIFIED Cleanup ---
 
-# Set up signal handling
 trap cleanup SIGINT SIGTERM
 
 # Function to run ROS bridge
@@ -267,72 +251,92 @@ run_gazebo() {
     # -----------------------------------------------------------
     # Launch gazebo and bridge in background, passing only launch args
     roslaunch jethexa_rl train.launch $LAUNCH_ARGS &
-    GAZEBO_PID=$!
-    echo -e "${GREEN}Gazebo started with PID: $GAZEBO_PID${NC}"
+    GAZEBO_PID=$! # Capture roslaunch PID
+    if [ -z "$GAZEBO_PID" ]; then
+        echo -e "${RED}Failed to capture roslaunch PID.${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}Gazebo (roslaunch) started with PID: $GAZEBO_PID${NC}" # Clarified PID source
     
     # Wait for Gazebo to initialize
-    echo -e "${YELLOW}Waiting for Gazebo and Bridge to initialize (30 seconds)...${NC}"
-    sleep 30
-    
-    # Check that the bridge node is running
-    echo -e "${YELLOW}Checking if ROS bridge node (/gym_interface) is running...${NC}"
-    # Use rosnode list to check for the node, allow some retries
-    NODE_CHECK_ATTEMPTS=5
+    echo -e "${YELLOW}Waiting up to 60 seconds for Gazebo and Bridge node (/gym_interface)...${NC}"
+    NODE_CHECK_ATTEMPTS=10 # 10 * 2s = 20s
     NODE_FOUND=false
     for (( i=1; i<=NODE_CHECK_ATTEMPTS; i++ )); do
+        # Check if roslaunch process itself is still running
+        if ! ps -p $GAZEBO_PID > /dev/null; then
+             echo -e "${RED}roslaunch process (PID: $GAZEBO_PID) exited prematurely!${NC}"
+             return 1 # roslaunch died, can't continue
+        fi
+
         if rosnode list 2>/dev/null | grep -q "/gym_interface"; then
             NODE_FOUND=true
+            echo -e "${GREEN}/gym_interface node found!${NC}"
             break
         fi
         echo -e "${YELLOW}  Attempt $i/$NODE_CHECK_ATTEMPTS: /gym_interface node not found yet, waiting 2 seconds...${NC}"
         sleep 2
     done
 
-    if [ "$NODE_FOUND" = true ]; then
-        echo -e "${GREEN}/gym_interface node found - ROS bridge appears to be running${NC}"
-        return 0
-    else
+    if [ "$NODE_FOUND" = false ]; then
         echo -e "${RED}/gym_interface node not found after $NODE_CHECK_ATTEMPTS attempts - ROS bridge may not be running properly${NC}"
         echo -e "${YELLOW}Available nodes:${NC}"
         rosnode list 2>/dev/null
         echo -e "${YELLOW}Check the roslaunch output above for errors in gym_bridge_ros.py initialization.${NC}"
+        return 1 # Return error code
+    fi
+    return 0 # Success
+}
+
+# --- MODIFIED Function to run training ---
+run_training() {
+    echo -e "${GREEN}Starting RL training in background with args: $TRAIN_ARGS ${NC}"
+    cd "$CATKIN_WS" || { echo "${RED}Failed to cd to $CATKIN_WS${NC}"; return 1; } # Ensure cd succeeds
+    # Pass train args array to the Python script and run in BACKGROUND
+    python3 "$CATKIN_WS/src/jethexa_rl/scripts/train_ppo.py" "${TRAIN_ARGS_LIST[@]}" &
+    TRAIN_PID=$! # Capture the PID of the python3 process
+    if [ -z "$TRAIN_PID" ]; then
+        echo -e "${RED}Failed to capture training script PID.${NC}"
         return 1
     fi
+    echo -e "${GREEN}Training script started with PID: $TRAIN_PID${NC}"
+    return 0
 }
+# --- END MODIFIED ---
 
-# Function to run training
-run_training() {
-    echo -e "${GREEN}Starting RL training with args: $TRAIN_ARGS ${NC}"
-    cd "$CATKIN_WS" || exit 1 # Ensure cd succeeds
-    # Pass train args array to the Python script
-    python3 "$CATKIN_WS/src/jethexa_rl/scripts/train_ppo.py" "${TRAIN_ARGS_LIST[@]}"
-    TRAINING_EXIT=$?
-
-    if [ $TRAINING_EXIT -ne 0 ]; then
-        echo -e "${RED}Training exited with code $TRAINING_EXIT${NC}"
-    else
-        echo -e "${GREEN}Training completed successfully${NC}"
-    fi
-}
-
-# Run the processes in sequence
+# --- Main Execution Flow ---
 run_gazebo
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}Gazebo and ROS bridge are running${NC}"
-    echo -e "${GREEN}Starting training in 5 seconds...${NC}"
-    sleep 5
+GAZEBO_EXIT_CODE=$?
+
+if [ $GAZEBO_EXIT_CODE -eq 0 ]; then
+    echo -e "${GREEN}Gazebo and ROS bridge appear to be running${NC}"
     run_training
+    TRAINING_START_EXIT_CODE=$?
+
+    if [ $TRAINING_START_EXIT_CODE -ne 0 ] || [ -z "$TRAIN_PID" ]; then
+        echo -e "${RED}Failed to start training script (Exit code: $TRAINING_START_EXIT_CODE). Cleaning up...${NC}"
+        # Cleanup is handled by trap on exit
+        exit 1
+    fi
+
 else
-    echo -e "${RED}Failed to start Gazebo and ROS bridge properly${NC}"
-    echo -e "${YELLOW}Check the output above for errors${NC}"
-    echo -e "${YELLOW}You can try running these commands manually:${NC}"
-    echo -e "  ${GREEN}Terminal 1:${NC} roslaunch jethexa_rl train.launch"
-    echo -e "  ${GREEN}Terminal 2:${NC} cd $CATKIN_WS && python3 $CATKIN_WS/src/jethexa_rl/scripts/train_ppo.py $TRAIN_ARGS"
+    echo -e "${RED}Failed to start Gazebo and ROS bridge properly (Exit code: $GAZEBO_EXIT_CODE). Check logs.${NC}"
+    # Cleanup is handled by trap on exit
+    exit 1
 fi
 
-# Wait for user to terminate with Ctrl+C
-echo -e "${YELLOW}Press Ctrl+C to stop all processes${NC}"
-wait $GAZEBO_PID
+# --- MODIFIED Wait Logic ---
+# Wait specifically for the training process PID
+echo -e "${YELLOW}Training running (PID: $TRAIN_PID). Waiting for it to complete or for Ctrl+C...${NC}"
+wait $TRAIN_PID
+TRAIN_EXIT_CODE=$?
+echo -e "${YELLOW}Training process (PID: $TRAIN_PID) exited with code $TRAIN_EXIT_CODE.${NC}"
 
-# Clean up when done
-cleanup 
+# --- End MODIFIED ---
+
+# Final cleanup is handled by the trap on exit (normal or signaled)
+echo -e "${YELLOW}Script finished or training completed. Cleanup will be handled by exit trap.${NC}"
+
+# --- REMOVED old wait logic for GAZEBO_PID ---
+# ...
+# --- END REMOVAL --- 

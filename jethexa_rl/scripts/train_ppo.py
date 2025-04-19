@@ -644,12 +644,21 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
             
             # <<< Set Learning Rate for Fine-tuning >>>
             if args.learning_rate is not None:
-                debug_print(f"--> Setting loaded model learning rate to: {args.learning_rate}")
-                model.learning_rate = args.learning_rate 
-                # Note: If using a schedule, this might need adjustment depending on SB3 version
-                # For a simple float LR, this should work.
+                initial_lr_finetune = args.learning_rate
+                debug_print(f"--> Fine-tuning: Setting initial learning rate to {initial_lr_finetune} with LINEAR schedule.")
+                # Define the linear schedule function
+                def linear_schedule_finetune(progress_remaining: float) -> float:
+                    """
+                    Linear learning rate schedule.
+                    :param progress_remaining: progress remaining (1 to 0)
+                    :return: learning rate
+                    """
+                    return progress_remaining * initial_lr_finetune
+                # Assign the schedule function to the model's learning rate
+                model.learning_rate = linear_schedule_finetune
             else:
-                 debug_print(f"--> Using learning rate loaded from model: {model.learning_rate}")
+                 # If no LR is specified, use whatever was saved with the model (could be a constant or a schedule)
+                 debug_print(f"--> Using learning rate/schedule loaded from model: {model.learning_rate}")
             # <<< End Set Learning Rate >>>
 
             # ==== Force load VecNormalize ==== 

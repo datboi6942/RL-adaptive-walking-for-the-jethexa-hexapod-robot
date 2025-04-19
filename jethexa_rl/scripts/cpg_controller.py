@@ -30,9 +30,11 @@ class CPGController:
         self.joint_bias = np.zeros((n_legs, n_joints_per_leg))
         # Default standing pose for JetHexa
         # Shoulder joints (wider stance)
-        self.joint_bias[:, 0] = 0.0
+        coxa_bias_magnitude = 0.1 
+        self.joint_bias[0:3, 0] = coxa_bias_magnitude  # Left legs (positive bias)
+        self.joint_bias[3:6, 0] = -coxa_bias_magnitude # Right legs (negative bias)
         # Hip joints (adjusting upward lift)
-        self.joint_bias[:, 1] = 0.6  # Increased Upward lift
+        self.joint_bias[:, 1] = 0.6  # Reduced Hip Forward Bias
         # Knee joints (adjusting bend)
         self.joint_bias[:, 2] = -0.7 # Reduced bend magnitude (straighter knee)
         
@@ -117,7 +119,6 @@ class CPGController:
             self.phase[i] += 2 * np.pi * self.frequencies[i] * dt
             
             # Apply coupling from other oscillators (improves stability)
-            # Coupling strength is now scaled by dt directly
             for j in range(self.n_legs):
                 if i != j:
                     phase_diff = self.phase[j] - self.phase[i] - \
@@ -137,8 +138,11 @@ class CPGController:
             phase_rad = phase_rad % (2 * np.pi) # Ensure phase is [0, 2*pi]
 
             # Shoulder: side-to-side movement
-            joint_angles[i, 0] = self.joint_bias[i, 0] + \
-                                 self.amplitudes[i, 0] * np.sin(phase_rad)
+            coxa_angle_offset = self.amplitudes[i, 0] * np.sin(phase_rad)
+            if i >= 3: # Right side legs (RF, RM, RR)
+                joint_angles[i, 0] = self.joint_bias[i, 0] - coxa_angle_offset
+            else: # Left side legs (LF, LM, LR)
+                joint_angles[i, 0] = self.joint_bias[i, 0] + coxa_angle_offset
 
             # --- Smoothed Hip Control --- 
             # Use cosine: Max lift near pi/2 (mid-swing), min lift near 3pi/2 (mid-stance)
@@ -146,7 +150,7 @@ class CPGController:
                  lift_amplitude_scale = 1.0
             else: # Stance phase
                  lift_amplitude_scale = 0.1 # Reduce vertical movement during stance
-            hip_angle = self.joint_bias[i, 1] + self.amplitudes[i, 1] * lift_amplitude_scale * np.cos(phase_rad) 
+            hip_angle = self.joint_bias[i, 1] - self.amplitudes[i, 1] * lift_amplitude_scale * np.cos(phase_rad)
             joint_angles[i, 1] = hip_angle
             # --- End Smoothed Hip Control --- 
 

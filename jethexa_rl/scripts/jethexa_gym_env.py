@@ -135,8 +135,6 @@ class JetHexaEnv(gym.Env):
         self.last_step_time = None
         self.sim_time = 0
         
-        # Wait for connections to establish
-        rospy.sleep(1.0)
         rospy.loginfo("JetHexaEnv initialized")
 
     def joint_state_cb(self, msg):
@@ -385,9 +383,6 @@ class JetHexaEnv(gym.Env):
         self.total_reward = 0
         self.distance_traveled = 0
         self.energy_used = 0
-        
-        # Wait for simulation to stabilize
-        rospy.sleep(1.0)
         
         # Reset CPG controller state
         self.cpg_controller = CPGController()
