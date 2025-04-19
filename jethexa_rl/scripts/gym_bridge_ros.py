@@ -40,6 +40,10 @@ class JetHexaGymBridge:
         self.terrain_generator = TerrainGenerator()
         self.current_difficulty = 0
         
+        # <<< MOVED UP: Initialize robot_name early >>>
+        self.robot_name = rospy.get_param('~robot_name', 'jethexa')
+        # <<< END MOVED UP >>>
+        
         # Define the correct order of joint names
         joint_names = [
             'coxa_joint_LF', 'femur_joint_LF', 'tibia_joint_LF',
@@ -62,12 +66,12 @@ class JetHexaGymBridge:
         # --- New: Default Stance --- 
         # Define the "sprawled" ready pose (replace with your specific values in radians)
         self.default_joint_positions = [
-            0.5,  0.6, -1.2,   # LF: coxa, femur, tibia
-            0.5,  0.6, -1.2,   # LM
-            0.5,  0.6, -1.2,   # LR
-           -0.5,  0.6, -1.2,   # RF (mirror sign if needed)
-           -0.5,  0.6, -1.2,   # RM
-           -0.5,  0.6, -1.2    # RR
+            0.7,  0.4, -1.0,   # LF: coxa (wider), femur (lower), tibia
+            0.7,  0.4, -1.0,   # LM
+            0.7,  0.4, -1.0,   # LR
+           -0.7,  0.4, -1.0,   # RF (mirror coxa)
+           -0.7,  0.4, -1.0,   # RM
+           -0.7,  0.4, -1.0    # RR
         ]
         # --- End Default Stance ---
 
@@ -86,23 +90,15 @@ class JetHexaGymBridge:
         
         # Connect to simulation services
         rospy.loginfo("Bridge: Connecting to Gazebo services...") # Added log
-        try:
-            rospy.wait_for_service('/gazebo/reset_simulation', timeout=5.0)
-            rospy.wait_for_service('/gazebo/pause_physics', timeout=5.0)
-            rospy.wait_for_service('/gazebo/unpause_physics')
-            rospy.wait_for_service('/gazebo/set_model_state')
-            self.reset_sim = rospy.ServiceProxy('/gazebo/reset_simulation', Empty)
-            self.pause_physics = rospy.ServiceProxy('/gazebo/pause_physics', Empty)
-            self.unpause_physics = rospy.ServiceProxy('/gazebo/unpause_physics', Empty)
-            self.set_model_state = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
-            # Add service proxies for getting and setting physics properties
-            rospy.wait_for_service('/gazebo/get_physics_properties', timeout=5.0)
-            self.get_physics_properties = rospy.ServiceProxy('/gazebo/get_physics_properties', GetPhysicsProperties)
-            rospy.wait_for_service('/gazebo/set_physics_properties', timeout=5.0)
-            self.set_physics_properties = rospy.ServiceProxy('/gazebo/set_physics_properties', SetPhysicsProperties)
-        except Exception as e:
-            rospy.logerr("Bridge: Error connecting to Gazebo services: {}".format(e))
-            raise # Reraise exception to prevent node from starting with missing services
+        # <<< OPTIMIZATION: Create proxies without waiting >>>
+        self.reset_sim_srv = rospy.ServiceProxy('/gazebo/reset_simulation', Empty)
+        self.pause_physics_srv = rospy.ServiceProxy('/gazebo/pause_physics', Empty)
+        self.unpause_physics_srv = rospy.ServiceProxy('/gazebo/unpause_physics', Empty)
+        self.set_model_state_srv = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
+        self.get_physics_properties_srv = rospy.ServiceProxy('/gazebo/get_physics_properties', GetPhysicsProperties)
+        self.set_physics_properties_srv = rospy.ServiceProxy('/gazebo/set_physics_properties', SetPhysicsProperties)
+        rospy.loginfo("Bridge: Gazebo service proxies created (will check availability before use).")
+        # <<< END OPTIMIZATION >>>
         
         # Episode tracking
         self.episode_steps = 0
@@ -131,10 +127,13 @@ class JetHexaGymBridge:
         self.dt = 0.0               # Updated by action_cb
         self.sim_step_dt = 0.02     # <<< ADDED: Assumed simulation step time (e.g., for 50Hz)
         
+        # <<< INCREASED Proximity Penalty Weight >>>
+        self.PROXIMITY_COLLISION_PENALTY = 100.0 # Penalty for link proximity (increased from 50.0)
+        # <<< END INCREASED >>>
+        
         # Subscribers for robot state
-        rospy.Subscriber('/joint_states', JointState, self.joint_state_cb)
-        # rospy.Subscriber('/gazebo/model_states', ModelStates, self.model_state_cb) # <<< COMMENTED OUT
-        rospy.Subscriber('/gazebo/link_states', LinkStates, self.link_state_cb) # <<< ADDED: Subscribe to link states
+        rospy.Subscriber('/jethexa/joint_states', JointState, self.joint_state_cb)
+        rospy.Subscriber('/gazebo/link_states', LinkStates, self.link_state_cb)
         rospy.Subscriber('/jethexa/imu', Imu, self.imu_cb)
         
         # Bridge publishers (to Python 3 training script)
@@ -163,28 +162,61 @@ class JetHexaGymBridge:
         except Exception as e:
             rospy.logerr("ERROR initializing robot position log file: {}".format(e))
         
-        # Wait for connections to establish
-        rospy.sleep(1.0)
+        # <<< OPTIMIZATION: Removed sleep(1.0) >>>
         rospy.loginfo("JetHexa Gym Bridge initialized")
 
         # ROS Service Clients
-        rospy.wait_for_service('/gazebo/set_physics_properties', timeout=5.0)
-        self.set_physics_client = rospy.ServiceProxy('/gazebo/set_physics_properties', SetPhysicsProperties)
-        rospy.wait_for_service('/gazebo/get_physics_properties', timeout=5.0)
-        self.get_physics_client = rospy.ServiceProxy('/gazebo/get_physics_properties', GetPhysicsProperties)
+        # <<< OPTIMIZATION: Use proxies created earlier >>>
+        # self.set_physics_client = self.set_physics_properties_srv # Renamed for clarity
+        # self.get_physics_client = self.get_physics_properties_srv # Renamed for clarity
+        #
         # Added CPG Service Client (ensure it's available)
-        try:
-             rospy.wait_for_service('/cpg_control', timeout=3.0) 
-             self.cpg_service_client = rospy.ServiceProxy('/cpg_control', CPGControl)
-             rospy.loginfo("Successfully connected to /cpg_control service.")
-        except (rospy.ROSException, rospy.ServiceException) as e:
-             rospy.logwarn("Could not connect to /cpg_control service: {}. CPG features disabled.".format(e))
-             self.cpg_service_client = None # Set to None if not available
+        # <<< OPTIMIZATION: Create proxy without waiting >>>
+        self.cpg_service_client = rospy.ServiceProxy('/cpg_control', CPGControl)
+        rospy.loginfo("Bridge: CPG service proxy created (will check availability before use).")
+        # <<< END OPTIMIZATION >>>
 
-        self.robot_name = rospy.get_param('~robot_name', 'jethexa')
         self.initial_height = rospy.get_param('~initial_height', 0.18) # Default height
         self.cpg_warmup_steps = rospy.get_param('~cpg_warmup_steps', 10) # Default CPG warmup steps
-    
+        
+        # <<< REMOVED: List of collision names for self-collision check >>>
+        # self.leg_collision_prefixes = []
+        # ... generation logic ...
+        # self.full_collision_names = ["{}::{}".format(self.robot_name, name) for name in self.leg_collision_prefixes]
+        # rospy.loginfo("Bridge: Collision names for check: {}".format(self.full_collision_names))
+        # <<< END REMOVED >>>
+
+        # <<< LOWERED: Define collision penalty as class attribute >>>
+        self.CONTACT_SELF_COLLISION_PENALTY = 25.0 # Penalty per unique colliding pair (increased from 5.0)
+        # <<< END LOWERED >>>
+
+        # <<< RESTORED: Original penalty value (can be tuned later) >>>
+        self.PROXIMITY_COLLISION_PENALTY = 50.0 # Penalty for link proximity (increased from 10.0)
+        # <<< END RESTORED >>>
+
+        # --- ADDED: Collision Penalty Parameters ---
+        COLLISION_PENALTY_WEIGHT = 50.0 # Increased from 25.0 to strongly discourage self-collisions
+        COLLISION_THRESHOLD_DISTANCE = 0.12 # Increased from 0.08 to start penalizing from further away
+        # Define pairs of links to check for collision (use short names)
+        COLLISION_CHECK_PAIRS = [
+            # Adjacent legs (same side)
+            ('tibia_LF', 'tibia_LM'), ('tibia_LM', 'tibia_LR'),
+            ('tibia_RF', 'tibia_RM'), ('tibia_RM', 'tibia_RR'),
+            ('femur_LF', 'femur_LM'), ('femur_LM', 'femur_LR'),
+            ('femur_RF', 'femur_RM'), ('femur_RM', 'femur_RR'),
+            ('coxa_LF', 'coxa_LM'), ('coxa_LM', 'coxa_LR'),
+            ('coxa_RF', 'coxa_RM'), ('coxa_RM', 'coxa_RR'),
+            # Cross-leg pairs (left-right)
+            ('tibia_LF', 'tibia_RF'), ('tibia_LM', 'tibia_RM'), ('tibia_LR', 'tibia_RR'),
+            ('femur_LF', 'femur_RF'), ('femur_LM', 'femur_RM'), ('femur_LR', 'femur_RR'),
+            ('coxa_LF', 'coxa_RF'), ('coxa_LM', 'coxa_RM'), ('coxa_LR', 'coxa_RR'),
+            # Diagonal pairs (front-back)
+            ('tibia_LF', 'tibia_LR'), ('tibia_RF', 'tibia_RR'),
+            ('femur_LF', 'femur_LR'), ('femur_RF', 'femur_RR'),
+            ('coxa_LF', 'coxa_LR'), ('coxa_RF', 'coxa_RR'),
+        ]
+        # --- End Collision Params ---
+
     def joint_state_cb(self, msg):
         """Update joint states from sensor feedback."""
         # Iterate through received joints and update state array based on name matching
@@ -431,21 +463,30 @@ class JetHexaGymBridge:
         if not self.use_domain_randomization:
             return
 
-        rospy.logdebug("Randomizing physics properties...")
+        # <<< OPTIMIZATION: Check service availability >>>
+        try:
+            self.get_physics_properties_srv.wait_for_service(timeout=1.0)
+            self.set_physics_properties_srv.wait_for_service(timeout=1.0)
+        except rospy.ROSException as e:
+            rospy.logwarn("Physics properties services not available, skipping randomization: {}".format(e))
+            return
+        # <<< END OPTIMIZATION >>>
+
+        rospy.loginfo("Randomizing physics properties...")
         try:
             # Get current physics properties
-            props = self.get_physics_client()
+            props = self.get_physics_properties_srv()
 
             # Generate randomized values ONLY for ERP and CFM
             new_erp = np.random.uniform(0.1, 0.3)
             new_cfm = np.random.uniform(0.0, 0.01)
             
             # Log the changes being applied
-            rospy.logdebug("Applying randomized ERP: {:.4f} (was {:.4f}), CFM: {:.4f} (was {:.4f})"\
+            rospy.loginfo("Applying randomized ERP: {:.4f} (was {:.4f}), CFM: {:.4f} (was {:.4f})"\
                          .format(new_erp, props.ode_config.erp, new_cfm, props.ode_config.cfm))
 
             # Set new physics properties, keeping others unchanged from 'props'
-            self.set_physics_client(
+            self.set_physics_properties_srv(
                 time_step=props.time_step,
                 max_update_rate=props.max_update_rate,
                 gravity=props.gravity,
@@ -476,16 +517,24 @@ class JetHexaGymBridge:
         paused_physics = False 
         set_state_success = False
         
+        # <<< OPTIMIZATION: Check service availability early in reset >>>
         try:
-            rospy.loginfo("Bridge: Reset - STEP 1: Pause Physics")
-            t0 = rospy.get_time()
-            self.pause_physics()
-            paused_physics = True # Mark as paused
-            t1 = rospy.get_time()
-            rospy.loginfo("Bridge: Reset - STEP 1: Pause Physics COMPLETED")
+            self.set_model_state_srv.wait_for_service(timeout=1.0)
+            if self.cpg_service_client is not None:
+                self.cpg_service_client.wait_for_service(timeout=1.0)
+            self.pause_physics_srv.wait_for_service(timeout=1.0)
+            self.unpause_physics_srv.wait_for_service(timeout=1.0)
+            # Note: randomize_physics checks its own services
+        except rospy.ROSException as e:
+            rospy.logerr("Required Gazebo/CPG services not available during reset: {}. Aborting reset.".format(e))
+            # Signal failure?
+            self.reset_complete_pub.publish(Bool(False))
+            return
+        # <<< END OPTIMIZATION >>>
 
-            rospy.loginfo("Bridge: Reset - STEP 2: Set Zero Heading")
-            # --- Define zero_state OUTSIDE the service call try block --- 
+        try:
+            # --- MOVED UP: STEP 2: Set Zero Heading (BEFORE PAUSE) ---
+            rospy.loginfo("Bridge: Reset - STEP 2 (Moved Up): Set Zero Heading")
             from gazebo_msgs.msg import ModelState
             from gazebo_msgs.srv import SetModelState
             
@@ -493,7 +542,7 @@ class JetHexaGymBridge:
             zero_state.model_name = self.robot_name
             zero_state.pose.position.x = 0.0
             zero_state.pose.position.y = 0.0
-            zero_state.pose.position.z = 0.2 # Use Z=0.2
+            zero_state.pose.position.z = 0.25 # <<< INCREASED initial height slightly
             quat = quaternion_from_euler(0.0, 0.0, 0.0)
             zero_state.pose.orientation.x = quat[0]
             zero_state.pose.orientation.y = quat[1]
@@ -505,13 +554,15 @@ class JetHexaGymBridge:
             zero_state.twist.angular.x = 0.0
             zero_state.twist.angular.y = 0.0
             zero_state.twist.angular.z = 0.0
-            # -----------------------------------------------------------
 
             set_state_success = False # Track success
             rospy.loginfo("Bridge: Reset - Attempting to call /gazebo/set_model_state...")
             try:
-                rospy.wait_for_service('/gazebo/set_model_state', timeout=2.0)
-                set_state = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
+                # Service already checked above
+                set_state = self.set_model_state_srv 
+                rospy.loginfo("Bridge: Reset - Sending state: Pos(x={:.3f}, y={:.3f}, z={:.3f}), Ori(x={:.3f}, y={:.3f}, z={:.3f}, w={:.3f})"\
+                             .format(zero_state.pose.position.x, zero_state.pose.position.y, zero_state.pose.position.z,
+                                     zero_state.pose.orientation.x, zero_state.pose.orientation.y, zero_state.pose.orientation.z, zero_state.pose.orientation.w))
                 resp = set_state(zero_state) # Call the service with pre-defined state
                 if resp.success:
                     rospy.loginfo("Bridge: Reset - set_model_state call successful.")
@@ -520,9 +571,9 @@ class JetHexaGymBridge:
                     rospy.logwarn("Bridge: Reset - set_model_state call failed: {}".format(resp.status_message))
             except (rospy.ServiceException, rospy.ROSException, rospy.ROSInterruptException) as e:
                 rospy.logwarn("Bridge: Reset - Exception during set_model_state call: {}".format(e))
+            rospy.loginfo("Bridge: Reset - STEP 2 (Moved Up): Set Zero Heading COMPLETED (Call Success Flag: {})".format(set_state_success))
+            # --- END MOVED UP STEP 2 ---
             
-            rospy.loginfo("Bridge: Reset - STEP 2: Set Zero Heading COMPLETED (Call Success Flag: {})".format(set_state_success))
-
             # --- Reset internal state variables (Uses zero_state defined above) ---
             rospy.loginfo("Bridge: Reset - STEP 3: Reset Internal State Vars")
             self.last_step_time = None
@@ -541,8 +592,8 @@ class JetHexaGymBridge:
             self.base_twist = None 
             rospy.loginfo("Bridge: Reset - STEP 3: Reset Internal State Vars COMPLETED")
 
-            # --- CPG Controller Reset and Warm-up --- 
-            rospy.loginfo("Bridge: Reset - STEP 4: CPG Reset/Warmup")
+            # --- MOVED UP: CPG Controller Reset and Warm-up (BEFORE PAUSE) --- 
+            rospy.loginfo("Bridge: Reset - STEP 4 (Moved Up): CPG Reset/Warmup")
             if self.cpg_service_client is not None:
                 try:
                     # 1. Reset the CPG state via service
@@ -551,43 +602,62 @@ class JetHexaGymBridge:
                     reset_resp = self.cpg_service_client(reset_req)
                     if not reset_resp.success:
                         rospy.logwarn("Bridge: Reset - CPG service RESET call failed: {}".format(reset_resp.message))
-                        # Consider raising an error or handling failure more robustly
                     else:
                         rospy.loginfo("Bridge: Reset - CPG service RESET successful.")
-                    
+                        if hasattr(reset_resp, 'joint_positions'): 
+                            rospy.loginfo("Bridge: Reset - CPG Reset Response Joints (sample): {}".format(np.round(reset_resp.joint_positions[:6], 3)))
+
                     # 2. Warm-up CPG by calling UPDATE via service (Exact Steps)
                     rospy.loginfo("Bridge: Reset - Warming up CPG for exactly {} steps via service...".format(self.cpg_warmup_steps))
-                    update_req = CPGControlRequest(command='update', dt=self.sim_step_dt) # Assuming self.sim_step_dt is correct
+                    update_req = CPGControlRequest(command='update', dt=self.sim_step_dt) 
                     for i in range(self.cpg_warmup_steps):
                         rospy.logdebug("Bridge: Reset - Calling CPG service: UPDATE (step {}/{})".format(i+1, self.cpg_warmup_steps))
                         update_resp = self.cpg_service_client(update_req)
                         if not update_resp.success:
                             rospy.logwarn("Bridge: Reset - CPG service UPDATE call failed (step {}): {}".format(i+1, update_resp.message))
-                            break # Stop warmup on failure
-                        # Optionally publish joints during warmup? Current code doesn't seem to.
+                        elif hasattr(update_resp, 'joint_positions'): 
+                            # <<< Log ALL joints for first step, sample for others >>>
+                            if i == 0:
+                                rospy.loginfo("Bridge: Reset - CPG Update (Step 1) Response Joints (ALL): {}".format(np.round(update_resp.joint_positions, 3)))
+                            elif (i + 1) % 5 == 0 or i == self.cpg_warmup_steps - 1: # Log every 5th and last (sample)
+                                rospy.loginfo("Bridge: Reset - CPG Update (Step {}) Response Joints (sample): {}".format(i+1, np.round(update_resp.joint_positions[:6], 3)))
+                        else:
+                            rospy.logdebug("Bridge: Reset - CPG service UPDATE successful (step {}).".format(i+1))
+
+                        if not update_resp.success: 
+                             break 
                     rospy.loginfo("Bridge: Reset - CPG service warm-up finished (or was interrupted).")
         
                 except rospy.ServiceException as e:
                     rospy.logerr("Bridge: Reset - ServiceException during CPG reset/warmup: {}".format(e))
-                # Removed specific ROSException handler as ServiceException covers timeout
                 except Exception as e:
                     rospy.logerr("Bridge: Reset - Unexpected error during CPG service reset/warmup: {}".format(e))
             else:
                  rospy.logwarn("Bridge: Reset - /cpg_control service client not available. Skipping CPG reset/warmup.")
-            rospy.loginfo("Bridge: Reset - STEP 4: CPG Reset/Warmup COMPLETED")
+            rospy.loginfo("Bridge: Reset - STEP 4 (Moved Up): CPG Reset/Warmup COMPLETED")
+            # --- END MOVED UP STEP 4 ---
 
+            # --- NOW PAUSE PHYSICS: STEP 1 (Moved Down) ---
+            rospy.loginfo("Bridge: Reset - STEP 1 (Moved Down): Pause Physics")
+            t0 = rospy.get_time()
+            self.pause_physics_srv() # Use the checked proxy
+            paused_physics = True # Mark as paused
+            t1 = rospy.get_time()
+            rospy.loginfo("Bridge: Reset - STEP 1 (Moved Down): Pause Physics COMPLETED in {:.4f}s".format(t1-t0))
+            # --- END MOVED DOWN STEP 1 ---
+            
             # --- Reset Terrain --- (If applicable)
             # rospy.loginfo("Bridge: Reset - STEP 5: Reset Terrain")
             # ... terrain reset logic ...
             # rospy.loginfo("Bridge: Reset - STEP 5: Reset Terrain COMPLETED")
 
-            # --- Domain Randomization ---
+            # --- Domain Randomization (while paused is likely ok) ---
             rospy.loginfo("Bridge: Reset - STEP 6: Randomize Physics")
             t0_physics = rospy.get_time()
             try:
                  self.randomize_physics() 
                  t1_physics = rospy.get_time()
-                 rospy.loginfo("Bridge: Reset - STEP 6: Randomize Physics COMPLETED")
+                 rospy.loginfo("Bridge: Reset - STEP 6: Randomize Physics COMPLETED in {:.4f}s".format(t1_physics-t0_physics))
             except Exception as e:
                  rospy.logerr("Bridge: Reset - Error during randomize_physics: {}".format(e))
 
@@ -595,7 +665,7 @@ class JetHexaGymBridge:
             rospy.loginfo("Bridge: Reset - STEP 7: Unpause Physics")
             t0_unpause = rospy.get_time()
             try:
-                self.unpause_physics()
+                self.unpause_physics_srv() # Use the checked proxy
                 rospy.loginfo("Bridge: Reset - STEP 7: Unpause Physics COMPLETED")
             except rospy.ServiceException as e:
                 rospy.logerr("Bridge: Reset - Error calling unpause_physics: {}".format(e))
@@ -603,6 +673,26 @@ class JetHexaGymBridge:
                  rospy.logerr("Bridge: Reset - Unexpected error during unpause_physics: {}".format(e))
             t1_unpause = rospy.get_time()
             rospy.loginfo("Bridge: Reset - STEP 7: Unpause Physics call took {:.4f}s".format(t1_unpause-t0_unpause))
+            # <<< ADDED: Short sleep and immediate state check >>>
+            rospy.sleep(0.1) # Allow a very brief moment for state propagation
+            try:
+                # Use a temporary subscriber to get ONE link state message immediately after unpause
+                rospy.loginfo("Bridge: Reset - Checking initial pose immediately after unpause...")
+                initial_link_state = rospy.wait_for_message('/gazebo/link_states', LinkStates, timeout=1.0)
+                if initial_link_state:
+                    for i, name in enumerate(initial_link_state.name):
+                        if name == 'jethexa::base_link':
+                            pos = initial_link_state.pose[i].position
+                            ori = initial_link_state.pose[i].orientation
+                            euler = euler_from_quaternion([ori.x, ori.y, ori.z, ori.w])
+                            rospy.loginfo("Bridge: Reset - Pose immediately after unpause: Pos(x={:.3f}, y={:.3f}, z={:.3f}), RPY({:.3f}, {:.3f}, {:.3f})"\
+                                        .format(pos.x, pos.y, pos.z, euler[0], euler[1], euler[2]))
+                            break # Found base link
+                else:
+                     rospy.logwarn("Bridge: Reset - Did not receive link state message immediately after unpause.")
+            except rospy.ROSException as e:
+                rospy.logwarn("Bridge: Reset - Error getting immediate link state after unpause: {}".format(e))
+            # <<< END ADDED >>>
 
             # --- Final Logs and Observation Publishing ---
             rospy.loginfo("Bridge: Reset - STEP 8: Publish Initial Observation")
@@ -628,6 +718,10 @@ class JetHexaGymBridge:
             # Ensure relevant state is cleared for the new architecture
             self.current_action = None
             self.last_state_update_time = None
+            self.prev_action = None 
+            self.self_col_count = 0 # <<< Ensure this is reset (used by proximity check) 
+            self.link_poses = {} 
+            self.base_twist = None 
 
         except Exception as e:
             rospy.logerr("Bridge: Reset - UNEXPECTED EXCEPTION in reset main block: {}".format(e))
@@ -657,40 +751,50 @@ class JetHexaGymBridge:
         """
         # --- New: count env steps for dynamic ramp ---
         self.global_step += 1
-        self.self_col_count = 0 # <<< ADDED: Reset collision count each step
+        # Reset the proximity collision counter for this step
+        self.self_col_count = 0 
 
         # --- Parameters (v14 Tuning: Reduce Static Rewards for Initial Exploration) ---
-        FORWARD_WEIGHT = 600.0 # Keep from v7
+        FORWARD_WEIGHT = 400.0 # Reduced from 600.0 to encourage smoother movement
         FORWARD_VEL_BONUS_WEIGHT = 25.0 # Keep from v9
         FORWARD_VEL_CLIP = 0.05 # Keep from v7
-        STABILITY_WEIGHT = 0.5 # <<< DECREASED AGAIN: Was 1.5, Significantly reduce static stability reward
+        STABILITY_WEIGHT = 1.0 # Increased from 0.5 to encourage more stable walking
         STABILITY_DECAY = 2.0 # Keep from v7
-        ANGULAR_VEL_WEIGHT = 0.25 # Keep from v13
-        HEIGHT_WEIGHT = 0.6 # <<< DECREASED: Was 2.5, Reduce reward for just being still at a certain height
+        ANGULAR_VEL_WEIGHT = 0.5 # Increased from 0.25 to penalize rapid angular movements more
+        HEIGHT_WEIGHT = 1.2 # Increased from 0.6 to maintain more consistent height
         HEIGHT_DECAY = 5.0 # Keep from v7
         ENERGY_WEIGHT = 0.3 # Keep from v8
         ENERGY_PENALTY_CAP = 0.5 # Keep from v7
-        LATERAL_PENALTY_WEIGHT = 5.0 # INCREASED from 2.5: Penalize sideways drift more
-        LATERAL_DEVIATION_THRESHOLD = 0.15 # <<< Reduced from 0.5 >>>
-        ROTATION_PENALTY_WEIGHT = 6.0 # INCREASED from 3.0: Penalize turning rate more
-        ROTATION_THRESHOLD_RAD = np.pi / 24 # <<< Reduced from np.pi / 4 (approx 7.5 degrees) >>>
-        ORIENTATION_PENALTY_WEIGHT = 12.0 # INCREASED from 8.0: Penalize facing away more
-        ORIENTATION_THRESHOLD_RAD = np.pi / 6 # <<< Reduced from np.pi / 2 (approx 30 degrees) >>>
-        ACTION_RATE_WEIGHT = 0.2 # Keep from v10
+        LATERAL_PENALTY_WEIGHT = 8.0 # Keep from previous
+        LATERAL_DEVIATION_THRESHOLD = 0.1 # <<< INCREASED Proximity Threshold >>>
+        ROTATION_PENALTY_WEIGHT = 25.0 # Keep from previous
+        ROTATION_THRESHOLD_RAD = np.pi / 32 # Keep from previous
+        ORIENTATION_PENALTY_WEIGHT = 30 # Keep from previous
+        ORIENTATION_THRESHOLD_RAD = np.pi / 12 # Keep from previous
+        ACTION_RATE_WEIGHT = 0.4 # Increased from 0.2 to encourage smoother transitions
         SURVIVAL_REWARD = 0.05 # Keep from v7
         FALL_PENALTY = -200.0 # Keep from v7
         FALL_THRESHOLD_ROLL_PITCH = 1.2 # Keep from v7
         # --- ADDED: Collision Penalty Parameters ---
-        COLLISION_PENALTY_WEIGHT = 10.0 # Adjust as needed
-        COLLISION_THRESHOLD_DISTANCE = 0.02 # <<< CHANGED: 2cm threshold
+        COLLISION_PENALTY_WEIGHT = 50.0 # Increased from 25.0 to strongly discourage self-collisions
+        COLLISION_THRESHOLD_DISTANCE = 0.065 # Increased from 0.08 to start penalizing from further away
         # Define pairs of links to check for collision (use short names)
         COLLISION_CHECK_PAIRS = [
+            # Adjacent legs (same side)
             ('tibia_LF', 'tibia_LM'), ('tibia_LM', 'tibia_LR'),
             ('tibia_RF', 'tibia_RM'), ('tibia_RM', 'tibia_RR'),
             ('femur_LF', 'femur_LM'), ('femur_LM', 'femur_LR'),
             ('femur_RF', 'femur_RM'), ('femur_RM', 'femur_RR'),
             ('coxa_LF', 'coxa_LM'), ('coxa_LM', 'coxa_LR'),
             ('coxa_RF', 'coxa_RM'), ('coxa_RM', 'coxa_RR'),
+            # Cross-leg pairs (left-right)
+            ('tibia_LF', 'tibia_RF'), ('tibia_LM', 'tibia_RM'), ('tibia_LR', 'tibia_RR'),
+            ('femur_LF', 'femur_RF'), ('femur_LM', 'femur_RM'), ('femur_LR', 'femur_RR'),
+            ('coxa_LF', 'coxa_RF'), ('coxa_LM', 'coxa_RM'), ('coxa_LR', 'coxa_RR'),
+            # Diagonal pairs (front-back)
+            ('tibia_LF', 'tibia_LR'), ('tibia_RF', 'tibia_RR'),
+            ('femur_LF', 'femur_LR'), ('femur_RF', 'femur_RR'),
+            ('coxa_LF', 'coxa_LR'), ('coxa_RF', 'coxa_RR'),
         ]
         # --- End Collision Params ---
 
@@ -778,42 +882,34 @@ class JetHexaGymBridge:
 
         # --- Calculate Collision Penalty ---
         # Note: This calculates proximity penalty, actual self_col_count needs separate update logic
-        proximity_penalty = 0.0 # Renamed from collision_penalty to avoid confusion with r_selfcol
+        proximity_penalty = 0.0
         links_available = hasattr(self, 'link_poses') and self.link_poses
         if not links_available:
-             rospy.logwarn_throttle(5, "Reward computed before link poses initialized. Skipping collision check.")
+             rospy.logwarn_throttle(5, "Reward computed before link poses initialized. Skipping proximity check.")
         else:
             checked_pairs = 0
             min_dist_found = float('inf') # For logging/debugging
 
             for link1_name, link2_name in COLLISION_CHECK_PAIRS:
-                # Check if both link poses were received in the last model_state message
                 if link1_name in self.link_poses and link2_name in self.link_poses:
                     pos1 = self.link_poses[link1_name]
                     pos2 = self.link_poses[link2_name]
 
                     distance = np.linalg.norm(pos1 - pos2)
-                    min_dist_found = min(min_dist_found, distance) # Track minimum distance for logging
+                    min_dist_found = min(min_dist_found, distance) # Track minimum distance
                     checked_pairs += 1
 
                     if distance < COLLISION_THRESHOLD_DISTANCE:
                         # Calculate penalty (increases as distance decreases)
                         penalty = COLLISION_PENALTY_WEIGHT * (COLLISION_THRESHOLD_DISTANCE - distance)
-                        proximity_penalty -= penalty # Subtract from total reward (add penalty)
-                        # Increment actual collision counter if threshold is breached
-                        # IMPORTANT: This simple increment might count multiple steps for one continuous collision.
-                        # A more robust implementation might check for *new* collisions.
-                        self.self_col_count += 1
-
-                # else: # Optional: Log if a link needed for check is missing
-                #    rospy.logwarn_throttle(5, "Skipping collision check pair ({}, {}): Link pose missing.".format(
-                #       link1_name, link2_name))
+                        proximity_penalty -= penalty # Subtract from total reward
+                        # Increment counter for this step
+                        self.self_col_count += 1 
 
             # Ensure penalty isn't applied if no pairs could be checked
             if checked_pairs == 0:
                  proximity_penalty = 0.0
-                 # rospy.logwarn_throttle(5, "Collision check skipped: No valid link pairs found in self.link_poses.")
-        # --- End Collision Penalty Calculation ---
+        # --- End Proximity Penalty Calculation ---
 
         # 9. Action Rate Penalty (Penalize large action changes)
         action_rate_penalty = 0.0
@@ -838,82 +934,91 @@ class JetHexaGymBridge:
             STABILITY_WEIGHT * stability_reward +
             ANGULAR_VEL_WEIGHT * angular_vel_penalty +
             HEIGHT_WEIGHT * height_reward +
-            ENERGY_WEIGHT * energy_penalty + # Note: This is the old energy penalty based on vel^2
+            ENERGY_WEIGHT * energy_penalty + 
             LATERAL_PENALTY_WEIGHT * lateral_penalty +
             ROTATION_PENALTY_WEIGHT * rotation_penalty +
             ORIENTATION_PENALTY_WEIGHT * orientation_penalty +
             ACTION_RATE_WEIGHT * action_rate_penalty +
-            proximity_penalty + # Renamed from collision_penalty
+            proximity_penalty +
             SURVIVAL_REWARD +
             fall_penalty_term +
-            # --- ADDED new dynamic penalties ---
-            -w_col * self.self_col_count +
             -w_bnc * (self.base_twist.linear.z if hasattr(self, 'base_twist') and self.base_twist is not None else 0.0) +
             -w_en * (np.sum(np.abs(np.array(self.last_joint_effort) * self.joint_velocities)) * dt if hasattr(self, 'last_joint_effort') and self.last_joint_effort is not None and self.joint_velocities is not None and dt > 0 else 0.0)
         )
 
-        # --- Enhanced Logging for Reward Analysis (Python 2 compatible) ---
-        log_prob = 0.02 # Log 2% of steps for better visibility
+        # --- Enhanced Logging for Reward Analysis ---
+        log_prob = 0.005 # Log ~0.5% of steps (was 0.001, originally 0.02)
         if np.random.rand() < log_prob:
-             # Calculate percentages of total reward (handle potential division by zero)
-             reward_components = [
+            # Define the components list correctly
+            reward_components = [
                  forward_reward, backward_penalty,
                  STABILITY_WEIGHT * stability_reward, ANGULAR_VEL_WEIGHT * angular_vel_penalty,
-                 HEIGHT_WEIGHT * height_reward, ENERGY_WEIGHT * energy_penalty, # Old energy penalty
+                 HEIGHT_WEIGHT * height_reward, ENERGY_WEIGHT * energy_penalty, 
                  LATERAL_PENALTY_WEIGHT * lateral_penalty, ROTATION_PENALTY_WEIGHT * rotation_penalty,
                  ORIENTATION_PENALTY_WEIGHT * orientation_penalty, ACTION_RATE_WEIGHT * action_rate_penalty,
-                 proximity_penalty, # Renamed
+                 proximity_penalty,
                  SURVIVAL_REWARD, fall_penalty_term,
-                 -w_col * self.self_col_count,
                  -w_bnc * (self.base_twist.linear.z if hasattr(self, 'base_twist') and self.base_twist is not None else 0.0),
                  -w_en * (np.sum(np.abs(np.array(self.last_joint_effort) * self.joint_velocities)) * dt if hasattr(self, 'last_joint_effort') and self.last_joint_effort is not None and self.joint_velocities is not None and dt > 0 else 0.0)
-             ]
-             total_abs = sum(abs(x) for x in reward_components if x is not None) # Handle potential None
-             if total_abs < 1e-6: # Avoid division by zero
-                 total_abs = 1e-6
+            ] # <<< Ensure closing bracket is present
+            # Calculate total absolute value for percentage calculation
+            total_abs = sum(abs(x) for x in reward_components if x is not None) 
+
+            # <<< ADDED: Log action components (gait type) >>>
+            gait_type_action = action[1] if action is not None and len(action) > 1 else float('nan')
+            # <<< END ADDED >>>
+
+            if total_abs < 1e-6: # Avoid division by zero
+                total_abs = 1e-6
+            
+            # Use .format() syntax for Python 2
+            log_comps = {
+                "Fwd":    "{:.2f} ({:.1f}%)".format(forward_reward, 100 * forward_reward / total_abs),
+                "Back":   "{:.2f} ({:.1f}%)".format(backward_penalty, 100 * backward_penalty / total_abs),
+                "Stab":   "{:.2f} ({:.1f}%)".format(STABILITY_WEIGHT * stability_reward, 100 * STABILITY_WEIGHT * stability_reward / total_abs),
+                "AngVel": "{:.2f} ({:.1f}%)".format(ANGULAR_VEL_WEIGHT * angular_vel_penalty, 100 * ANGULAR_VEL_WEIGHT * angular_vel_penalty / total_abs),
+                "Hght":   "{:.2f} ({:.1f}%)".format(HEIGHT_WEIGHT * height_reward, 100 * HEIGHT_WEIGHT * height_reward / total_abs),
+                "Enrg":   "{:.2f} ({:.1f}%)".format(ENERGY_WEIGHT * energy_penalty, 100 * ENERGY_WEIGHT * energy_penalty / total_abs),
+                "Lat":    "{:.2f} ({:.1f}%)".format(LATERAL_PENALTY_WEIGHT * lateral_penalty, 100 * LATERAL_PENALTY_WEIGHT * lateral_penalty / total_abs),
+                "Rot":    "{:.2f} ({:.1f}%)".format(ROTATION_PENALTY_WEIGHT * rotation_penalty, 100 * ROTATION_PENALTY_WEIGHT * rotation_penalty / total_abs),
+                "Orient": "{:.2f} ({:.1f}%)".format(ORIENTATION_PENALTY_WEIGHT * orientation_penalty, 100 * ORIENTATION_PENALTY_WEIGHT * orientation_penalty / total_abs),
+                "ActRate":"{:.2f} ({:.1f}%)".format(ACTION_RATE_WEIGHT * action_rate_penalty, 100 * ACTION_RATE_WEIGHT * action_rate_penalty / total_abs),
+                "ProxPen": "{:.2f} ({:.1f}%)".format(proximity_penalty, 100 * proximity_penalty / total_abs),
+                "Surv":   "{:.2f}".format(SURVIVAL_REWARD),
+                "Fall":   "{:.2f}".format(fall_penalty_term),
+                "Bounce": "{:.2f}".format(-w_bnc * (self.base_twist.linear.z if hasattr(self, 'base_twist') and self.base_twist is not None else 0.0)),
+                "NrgUse": "{:.2f}".format(-w_en * (np.sum(np.abs(np.array(self.last_joint_effort) * self.joint_velocities)) * dt if hasattr(self, 'last_joint_effort') and self.last_joint_effort is not None and self.joint_velocities is not None and dt > 0 else 0.0)),
+                "Total":  "{:.2f}".format(reward)
+            }
+            rospy.logwarn("\nReward Component Breakdown:")
+            for comp, value in sorted(log_comps.items()): # Sort for consistent order
+                rospy.logwarn("{:>8}: {}".format(comp, value))
              
-             # Use .format() syntax for Python 2
-             log_comps = {
-                 "Fwd":    "{:.2f} ({:.1f}%)".format(forward_reward, 100 * forward_reward / total_abs),
-                 "Back":   "{:.2f} ({:.1f}%)".format(backward_penalty, 100 * backward_penalty / total_abs),
-                 "Stab":   "{:.2f} ({:.1f}%)".format(STABILITY_WEIGHT * stability_reward, 100 * STABILITY_WEIGHT * stability_reward / total_abs),
-                 "AngVel": "{:.2f} ({:.1f}%)".format(ANGULAR_VEL_WEIGHT * angular_vel_penalty, 100 * ANGULAR_VEL_WEIGHT * angular_vel_penalty / total_abs),
-                 "Hght":   "{:.2f} ({:.1f}%)".format(HEIGHT_WEIGHT * height_reward, 100 * HEIGHT_WEIGHT * height_reward / total_abs),
-                 "Enrg":   "{:.2f} ({:.1f}%)".format(ENERGY_WEIGHT * energy_penalty, 100 * ENERGY_WEIGHT * energy_penalty / total_abs),
-                 "Lat":    "{:.2f} ({:.1f}%)".format(LATERAL_PENALTY_WEIGHT * lateral_penalty, 100 * LATERAL_PENALTY_WEIGHT * lateral_penalty / total_abs),
-                 "Rot":    "{:.2f} ({:.1f}%)".format(ROTATION_PENALTY_WEIGHT * rotation_penalty, 100 * ROTATION_PENALTY_WEIGHT * rotation_penalty / total_abs),
-                 "Orient": "{:.2f} ({:.1f}%)".format(ORIENTATION_PENALTY_WEIGHT * orientation_penalty, 100 * ORIENTATION_PENALTY_WEIGHT * orientation_penalty / total_abs),
-                 "ActRate":"{:.2f} ({:.1f}%)".format(ACTION_RATE_WEIGHT * action_rate_penalty, 100 * ACTION_RATE_WEIGHT * action_rate_penalty / total_abs),
-                 "ProxPen": "{:.2f}".format(proximity_penalty),
-                 "Surv":   "{:.2f}".format(SURVIVAL_REWARD),
-                 "Fall":   "{:.2f}".format(fall_penalty_term),
-                 "SlfCol": "{:.2f}".format(-w_col * self.self_col_count),
-                 "Bounce": "{:.2f}".format(-w_bnc * (self.base_twist.linear.z if hasattr(self, 'base_twist') and self.base_twist is not None else 0.0)),
-                 "NrgUse": "{:.2f}".format(-w_en * (np.sum(np.abs(np.array(self.last_joint_effort) * self.joint_velocities)) * dt if hasattr(self, 'last_joint_effort') and self.last_joint_effort is not None and self.joint_velocities is not None and dt > 0 else 0.0)),
-                 "Total":  "{:.2f}".format(reward)
-             }
-             rospy.logwarn("\nReward Component Breakdown:")
-             for comp, value in sorted(log_comps.items()): # Sort for consistent order
-                 rospy.logwarn("{:>8}: {}".format(comp, value))
-             
-             # Log additional state information using .format()
-             rospy.logwarn("\nState Details:")
-             rospy.logwarn("Position (x,y,z): ({:.2f}, {:.2f}, {:.2f})".format(current_pos[0], current_pos[1], current_pos[2]))
-             rospy.logwarn("Orientation (r,p,y): ({:.2f}, {:.2f}, {:.2f})".format(roll, pitch, yaw))
-             rospy.logwarn("Forward Movement: {:.3f}".format(forward_movement))
-             # --- ADDED: Log Collision Check Info & Raw Energy Cost --- 
-             if links_available and checked_pairs > 0:
-                 rospy.logwarn("Min Leg Dist: {:.3f}m".format(min_dist_found))
-             else:
-                 rospy.logwarn("Min Leg Dist: N/A (Check skipped or failed)")
-             if self.joint_velocities is not None:
+            # Log additional state information using .format()
+            rospy.logwarn("\nState Details:")
+            rospy.logwarn("Position (x,y,z): ({:.2f}, {:.2f}, {:.2f})".format(current_pos[0], current_pos[1], current_pos[2]))
+            rospy.logwarn("Orientation (r,p,y): ({:.2f}, {:.2f}, {:.2f})".format(roll, pitch, yaw))
+            rospy.logwarn("Forward Movement: {:.3f}".format(forward_movement))
+            # --- ADDED: Log Collision Check Info & Raw Energy Cost --- 
+            if links_available and checked_pairs > 0:
+                rospy.logwarn("Min Link Pair Dist Checked: {:.3f}m".format(min_dist_found))
+            else:
+                rospy.logwarn("Min Link Pair Dist Checked: N/A (Check skipped or failed)")
+            if self.joint_velocities is not None:
                 raw_energy_term = np.sum(np.square(self.joint_velocities))
                 rospy.logwarn("Raw Energy Term (Sum Vel^2): {:.4f}".format(raw_energy_term))
-             # --- End Added --- 
-             rospy.logwarn("Height Diff: {:.3f}".format(height_diff))
-             rospy.logwarn("Stability Cost: {:.3f}".format(stability_cost))
-             rospy.logwarn("Angular Velocity (r,p,y): ({:.2f}, {:.2f}, {:.2f})".format(roll_rate, pitch_rate, yaw_rate))
-             rospy.logwarn("----------------------------------------")
+            # --- End Added --- 
+            rospy.logwarn("Height Diff: {:.3f}".format(height_diff))
+            rospy.logwarn("Stability Cost: {:.3f}".format(stability_cost))
+            rospy.logwarn("Angular Velocity (r,p,y): ({:.2f}, {:.2f}, {:.2f})".format(roll_rate, pitch_rate, yaw_rate))
+            # <<< ADDED: Log raw IMU yaw rate for bias check >>>
+            rospy.logwarn("IMU Yaw Rate (imu_data[5]): {:.4f}".format(self.imu_data[5] if hasattr(self, 'imu_data') and self.imu_data is not None and len(self.imu_data) > 5 else float('nan')))
+            # <<< END ADDED >>>
+            # <<< ADDED: Log gait type action >>>
+            rospy.logwarn("Action Gait Type (action[1]): {:.3f}".format(gait_type_action))
+            # <<< END ADDED >>>
+            rospy.logwarn("Proximity Collisions Counted: {}".format(self.self_col_count))
+            rospy.logwarn("----------------------------------------")
 
         # Update previous state for next step's calculation *before* returning
         self.prev_position = current_pos.copy()
@@ -937,6 +1042,10 @@ class JetHexaGymBridge:
         finally:
             rospy.loginfo("Bridge: Exiting rospy.spin() loop.")
 
+def _on_ros_shutdown():
+    rospy.loginfo("ROS is shutting down, exiting bridge.")
+    # Consider adding any other necessary cleanup here
+    sys.exit(0)
 
 if __name__ == '__main__':
     try:
@@ -944,3 +1053,5 @@ if __name__ == '__main__':
         bridge.run()
     except rospy.ROSInterruptException:
         pass 
+
+rospy.on_shutdown(_on_ros_shutdown) # Register the shutdown hook 
