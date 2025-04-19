@@ -1,0 +1,83 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- Depth Camera -->
+    <xacro:macro name="depth_camera" params="parent prefix *origin">
+        <!-- Camera Link -->
+        <link name="${prefix}camera_link">
+            <visual>
+                <geometry>
+                    <box size="0.05 0.05 0.05"/>
+                </geometry>
+                <material name="black"/>
+            </visual>
+            <collision>
+                <geometry>
+                    <box size="0.05 0.05 0.05"/>
+                </geometry>
+            </collision>
+            <inertial>
+                <mass value="0.1"/>
+                <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+            </inertial>
+        </link>
+
+        <!-- Camera Joint -->
+        <joint name="${prefix}camera_joint" type="fixed">
+            <xacro:insert_block name="origin"/>
+            <parent link="${parent}"/>
+            <child link="${prefix}camera_link"/>
+        </joint>
+
+        <!-- Camera Plugin -->
+        <gazebo reference="${prefix}camera_link">
+            <material>Gazebo/Black</material>
+        </gazebo>
+
+        <!-- === Depth Camera Plugin === -->
+        <gazebo reference="${prefix}camera_link">
+            <sensor type="depth" name="${prefix}_depth_camera">
+                <update_rate>20.0</update_rate>
+                <camera name="depth_cam">
+                    <horizontal_fov>1.047</horizontal_fov> <!-- ~60 degrees -->
+                    <image>
+                        <width>640</width>
+                        <height>480</height>
+                        <format>R8G8B8</format>
+                    </image>
+                    <clip>
+                        <near>0.05</near>
+                        <far>3.0</far>
+                    </clip>
+                </camera>
+                <plugin name="${prefix}_camera_plugin" filename="libgazebo_ros_openni_kinect.so">
+                    <baseline>0.2</baseline>
+                    <alwaysOn>true</alwaysOn>
+                    <updateRate>10.0</updateRate>
+                    <cameraName>${prefix}_depth_camera</cameraName>
+                    <imageTopicName>/jethexa/depth_camera/rgb/image_raw</imageTopicName> <!-- Default RGB topic -->
+                    <depthImageTopicName>/jethexa/depth_camera/depth/image_raw</depthImageTopicName> <!-- Our desired depth topic -->
+                    <pointCloudTopicName>/jethexa/depth_camera/depth/points</pointCloudTopicName>
+                    <cameraInfoTopicName>/jethexa/depth_camera/depth/camera_info</cameraInfoTopicName> <!-- Our desired info topic -->
+                    <depthImageCameraInfoTopicName>/jethexa/depth_camera/depth/camera_info</depthImageCameraInfoTopicName>
+                    <frameName>${prefix}camera_link</frameName>
+                    <pointCloudCutoff>0.05</pointCloudCutoff>
+                    <distortionK1>0.0</distortionK1>
+                    <distortionK2>0.0</distortionK2>
+                    <distortionK3>0.0</distortionK3>
+                    <distortionT1>0.0</distortionT1>
+                    <distortionT2>0.0</distortionT2>
+                    <CxPrime>0</CxPrime>
+                    <Cx>0</Cx>
+                    <Cy>0</Cy>
+                    <focalLength>0</focalLength>
+                    <hackBaseline>0</hackBaseline>
+                    <robotNamespace>/jethexa</robotNamespace> <!-- Set namespace correctly -->
+                </plugin>
+            </sensor>
+        </gazebo>
+        <!-- ========================= -->
+
+    </xacro:macro>
+
+</robot> 

@@ -1,0 +1,92 @@
+<launch>
+  <!-- Start Gazebo headless by default -->
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="headless" default="false"/>
+  <arg name="world" default="$(find jethexa_rl)/worlds/training.world"/>
+  <arg name="domain_randomization" default="true"/>
+
+  <!-- Launch Gazebo with specified world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="$(arg headless)"/>
+    <arg name="debug" value="false"/>
+  </include>
+
+  <!-- Load JetHexa model -->
+  <include file="$(find jethexa_description)/launch/description.launch">
+    <arg name="robot_name" value="jethexa"/>
+    <arg name="tf_prefix" value="jethexa"/>
+  </include>
+  
+  <!-- Load PID gains for gazebo_ros_control (Moderating gains) -->
+  <rosparam>
+    /jethexa/gazebo_ros_control/pid_gains:
+      # Coxa and Femur joints (Slightly higher gains for responsiveness)
+      coxa_joint_LF:  {p: 18.0, i: 0.05, d: 0.3}
+      femur_joint_LF: {p: 18.0, i: 0.05, d: 0.3}
+      coxa_joint_LM:  {p: 18.0, i: 0.05, d: 0.3}
+      femur_joint_LM: {p: 18.0, i: 0.05, d: 0.3}
+      coxa_joint_LR:  {p: 18.0, i: 0.05, d: 0.3}
+      femur_joint_LR: {p: 18.0, i: 0.05, d: 0.3}
+      coxa_joint_RF:  {p: 18.0, i: 0.05, d: 0.3}
+      femur_joint_RF: {p: 18.0, i: 0.05, d: 0.3}
+      coxa_joint_RM:  {p: 18.0, i: 0.05, d: 0.3}
+      femur_joint_RM: {p: 18.0, i: 0.05, d: 0.3}
+      coxa_joint_RR:  {p: 18.0, i: 0.05, d: 0.3}
+      femur_joint_RR: {p: 18.0, i: 0.05, d: 0.3}
+      
+      # Tibia joints (Lower gains to reduce foot oscillation)
+      tibia_joint_LF: {p: 12.0, i: 0.05, d: 0.1}
+      tibia_joint_LM: {p: 12.0, i: 0.05, d: 0.1}
+      tibia_joint_LR: {p: 12.0, i: 0.05, d: 0.1}
+      tibia_joint_RF: {p: 12.0, i: 0.05, d: 0.1}
+      tibia_joint_RM: {p: 12.0, i: 0.05, d: 0.1}
+      tibia_joint_RR: {p: 12.0, i: 0.05, d: 0.1}
+  </rosparam>
+
+  <!-- Spawn JetHexa model in Gazebo -->
+  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" 
+        args="-param robot_description -urdf -model jethexa -x 0 -y 0 -z 0.2" />
+
+  <!-- Launch the CPG Service Node -->
+  <node name="cpg_service" pkg="jethexa_rl" type="cpg_service_node.py" output="screen">
+    <env name="PYTHONPATH" value="$(optenv PYTHONPATH)"/>
+  </node>
+
+  <!-- Launch the RL gym interface with Python 2 -->
+  <node name="gym_interface" pkg="jethexa_rl" type="gym_bridge_ros.py" output="screen">
+    <param name="domain_randomization" value="$(arg domain_randomization)"/>
+  </node>
+
+  <!-- Load controller definitions -->
+  <rosparam file="$(find jethexa_rl)/config/jethexa_controllers.yaml" command="load" ns="/jethexa"/>
+
+  <!-- Load and start controllers -->
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+        output="screen" ns="/jethexa" args="
+          joint_state_controller
+          coxa_joint_LF_position_controller
+          femur_joint_LF_position_controller
+          tibia_joint_LF_position_controller
+          coxa_joint_LM_position_controller
+          femur_joint_LM_position_controller
+          tibia_joint_LM_position_controller
+          coxa_joint_LR_position_controller
+          femur_joint_LR_position_controller
+          tibia_joint_LR_position_controller
+          coxa_joint_RF_position_controller
+          femur_joint_RF_position_controller
+          tibia_joint_RF_position_controller
+          coxa_joint_RM_position_controller
+          femur_joint_RM_position_controller
+          tibia_joint_RM_position_controller
+          coxa_joint_RR_position_controller
+          femur_joint_RR_position_controller
+          tibia_joint_RR_position_controller
+          "/>
+</launch> 

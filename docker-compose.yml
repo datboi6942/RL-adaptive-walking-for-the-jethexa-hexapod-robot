@@ -1,0 +1,22 @@
+version: '3'
+
+services:
+  jethexa_rl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jethexa_rl_training
+    container_name: jethexa_rl_container
+    privileged: true
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./jethexa_description:/catkin_ws/src/jethexa_description
+      - ./jethexa_gym_env:/catkin_ws/src/jethexa_gym_env
+      - ./models:/catkin_ws/models
+      - ./logs:/catkin_ws/logs
+    tty: true
+    stdin_open: true
+    command: tail -f /dev/null 

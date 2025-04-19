@@ -1,0 +1,21 @@
+<launch>
+  <!-- Start Gazebo parameters -->
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="headless" default="false"/>
+  <arg name="world" default="$(find jethexa_rl)/worlds/training.world"/>
+
+  <!-- Launch Gazebo with specified world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="$(arg headless)"/>
+    <arg name="debug" value="false"/>
+  </include>
+
+  <!-- Load JetHexa model -->
+  <include file="$(find jethexa_description)/launch/description.launch" />
+</launch> 

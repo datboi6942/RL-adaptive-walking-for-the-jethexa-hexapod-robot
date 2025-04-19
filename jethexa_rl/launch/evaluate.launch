@@ -1,0 +1,40 @@
+<launch>
+  <!-- Start Gazebo with GUI for visualization -->
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>  <!-- Enable GUI for visualization -->
+  <arg name="headless" default="false"/>
+  <arg name="world" default="$(find jethexa_rl)/worlds/training.world"/>
+  <arg name="domain_randomization" default="false"/>
+  
+  <!-- Optional evaluation parameters -->
+  <arg name="model_path" default=""/>
+  <arg name="vec_normalize_path" default=""/>
+  <arg name="difficulty" default="0"/>
+  <arg name="episodes" default="3"/>
+  
+  <!-- Launch Gazebo with specified world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="$(arg headless)"/>
+    <arg name="debug" value="false"/>
+  </include>
+
+  <!-- Load JetHexa model -->
+  <include file="$(find jethexa_description)/launch/description.launch" />
+  
+  <!-- Launch the RL gym interface -->
+  <node name="gym_interface" pkg="jethexa_rl" type="jethexa_gym_env.py" output="screen">
+    <param name="domain_randomization" value="$(arg domain_randomization)"/>
+  </node>
+  
+  <!-- Launch the evaluation script if model_path is provided -->
+  <node name="model_evaluation" pkg="jethexa_rl" type="evaluate_model.py" output="screen"
+        args="--model $(arg model_path) --difficulty $(arg difficulty) --episodes $(arg episodes) --render --comparison --save-csv"
+        if="$(eval model_path != '')">
+    <param name="vec_normalize" value="$(arg vec_normalize_path)" if="$(eval vec_normalize_path != '')"/>
+  </node>
+</launch> 

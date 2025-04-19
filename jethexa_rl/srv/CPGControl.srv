@@ -1,0 +1,10 @@
+# Service definition for controlling the CPG
+
+# Request fields
+string command    # 'reset' or 'update'
+float32 dt        # Delta time for update command (ignored for reset)
+---
+# Response fields
+bool success                # True if command was processed successfully
+float64[] joint_positions   # Array of 18 joint positions (only populated for update command)
+string message              # Optional status message 
