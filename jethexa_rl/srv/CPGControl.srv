@@ -3,6 +3,7 @@
 # Request fields
 string command    # 'reset' or 'update'
 float32 dt        # Delta time for update command (ignored for reset)
+float32[] params  # CPG parameters from RL agent (for update command)
 ---
 # Response fields
 bool success                # True if command was processed successfully

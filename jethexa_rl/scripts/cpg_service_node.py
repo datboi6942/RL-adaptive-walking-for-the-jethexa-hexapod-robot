@@ -48,18 +48,49 @@ class CPGServiceNode:
                 if req.dt <= 0:
                     response.message = "Invalid dt ({:.4f}) for update command.".format(req.dt)
                     rospy.logwarn(response.message)
+                    return response
                 else:
-                    joint_positions = self.cpg_controller.update(req.dt)
+                    # --- MODIFIED: Handle optional params --- 
+                    params_provided = req.params and len(req.params) > 0
+                    if params_provided:
+                        try:
+                            # Convert params from list of float32 to numpy array
+                            cpg_params = np.array(req.params, dtype=np.float32)
+                            rospy.logdebug("CPG Service: Setting gait params: {}".format(np.round(cpg_params, 3)))
+                            self.cpg_controller.set_gait_params(cpg_params)
+                        except Exception as e:
+                            response.message = "Error calling set_gait_params: {}".format(e)
+                            rospy.logerr(response.message)
+                            return response # Return immediately on param setting error
+                    else:
+                        rospy.logdebug("CPG Service: No params provided with update command (likely warm-up). Using existing CPG params.")
+                    # --- END MODIFICATION ---
+                    
+                    # --- Now update the CPG (either with newly set or existing params) ---\
+                    try:
+                        joint_positions = self.cpg_controller.update(req.dt)
+                        rospy.logdebug("CPG Service: Calculated joint positions (first 6): {}".format(np.round(joint_positions[:6], 3)))
+                    except Exception as e:
+                        response.message = "Error calling cpg_controller.update(): {}".format(e)
+                        rospy.logerr(response.message)
+                        response.joint_positions = []
+                        return response # Return on update error
+
                     # Ensure output is a list of float64 for the service response
                     response.joint_positions = np.array(joint_positions).astype(np.float64).tolist()
                     if len(response.joint_positions) == 18: # Check expected size
                         response.success = True
-                        response.message = "CPG updated."
+                        # Modify message based on whether params were set
+                        if params_provided:
+                            response.message = "CPG parameters set and updated."
+                        else:
+                            response.message = "CPG updated (no new parameters provided)."
                         rospy.logdebug("CPG Service: Update successful. Returning {} joint positions.".format(len(response.joint_positions)))
                     else:
                          response.message = "CPG update returned incorrect number of joints ({} instead of 18).".format(len(response.joint_positions))
                          rospy.logerr(response.message)
                          response.joint_positions = [] # Return empty list on error
+                         response.success = False # Ensure success is False
             
             else:
                 response.message = "Unknown command: {}".format(req.command)

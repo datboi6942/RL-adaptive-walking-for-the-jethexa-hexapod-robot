@@ -1,108 +1,133 @@
-# JetHexa RL Training with Python 2/3 Bridge
+# JetHexa Adaptive Locomotion with CPG-RL
 
-This package implements reinforcement learning for the JetHexa hexapod robot in Gazebo simulation, using a bridge architecture to support both ROS 1 (Python 2) and modern RL libraries (Python 3).
+This repository implements a hybrid Central Pattern Generator (CPG) and Reinforcement Learning approach for hexapod locomotion, specifically designed for the JetHexa robot. The system learns to generate adaptive gaits that respond to the robot's environment and terrain conditions.
 
-## Architecture
+## System Architecture
 
-The system uses a dual-language architecture to solve the Python 2/3 compatibility issues:
+The implementation uses a dual-component architecture:
 
-1. **Python 2 ROS Node (Bridge)**: Handles Gazebo simulation, robot control, and terrain generation using ROS 1
-2. **Python 3 RL Training**: Implements PPO training with Stable-Baselines3 in Python 3
+1. **CPG Controller**: Generates rhythmic patterns for leg coordination
+   - Dynamic pattern generation based on environment feedback
+   - Learns to adapt phases and amplitudes in real-time
+   - No pre-configured gaits - fully emergent behavior
 
-The two components communicate through ROS topics, allowing each part to run in its optimal environment.
+2. **RL Policy**: Optimizes locomotion parameters
+   - Learns to modulate CPG parameters based on terrain and robot state
+   - Develops gaits naturally through interaction with environment
+   - Optimizes for stability and efficient movement
 
-## File Structure
+## Key Features
 
-- `launch/train.launch`: Main launch file for starting the Gazebo simulation and bridge
-- `scripts/gym_bridge_ros.py`: Python 2 ROS node that interfaces with Gazebo (runs in ROS 1)
-- `scripts/train_ppo.py`: Python 3 script that handles RL training using Stable-Baselines3
-- `scripts/cpg_controller.py`: Central Pattern Generator for hexapod locomotion
-- `scripts/terrain_generator.py`: Generates random terrain for curriculum learning
+- **Emergent Behavior**: Gaits emerge naturally from environment interaction rather than being pre-programmed
+- **Adaptive Movement**: Movement patterns automatically adjust to terrain and robot state
+- **Energy Efficiency**: Penalties for excessive joint movements and power usage
+- **Stability Focus**: Exponential stability rewards based on roll and pitch
+- **Anti-Rotation**: Strong penalties prevent undesired turning behavior
+- **Self-Collision Avoidance**: Proximity-based penalties between leg segments
 
-## Setup Instructions
+## Training System
 
-### Prerequisites
+### Environment
 
-1. ROS 1 (Melodic/Noetic)
-2. Gazebo
-3. Python 3.6+ with pip
-4. Python 2.7 (for ROS 1)
+- ROS Melodic + Gazebo simulation
+- Python 2/3 bridge architecture for compatibility
+- Real-time reward computation and state tracking
+- Automated checkpoint saving every 20,000 timesteps
 
-### Python 3 Dependencies
+### RL Configuration
 
-Install the required Python 3 packages:
+- Algorithm: PPO (Stable-Baselines3)
+- Learning Rate: 3e-5 (fine-tuned for stability)
+- Observation Space: Joint positions/velocities, robot pose, IMU data
+- Action Space: CPG parameters (frequency, gait type, phases, amplitudes)
 
-```bash
-pip3 install numpy gym stable-baselines3 matplotlib
+### Reward Structure
+
+The reward function combines multiple components:
+
+```python
+reward = (
+    FORWARD_WEIGHT * forward_movement +      # Forward progress
+    STABILITY_WEIGHT * stability_reward +    # Level body maintenance
+    HEIGHT_WEIGHT * height_reward +          # Consistent height
+    ENERGY_WEIGHT * energy_penalty +         # Power efficiency
+    ROTATION_PENALTY_WEIGHT * rotation_penalty + # Anti-turning
+    LATERAL_PENALTY_WEIGHT * lateral_penalty +   # Straight-line motion
+    proximity_penalties +                    # Collision avoidance
+    additional_terms...                      # Other behavioral incentives
+)
 ```
 
-### Python 2 Dependencies
+## Usage
 
-Make sure ROS dependencies are installed:
+### Training
 
-```bash
-sudo apt-get install python-rospy python-std-msgs python-tf python-geometry-msgs python-gazebo-msgs
-```
-
-## Running the Training
-
-### 1. Start the ROS Bridge and Gazebo Simulation
-
+1. **Launch the Environment**:
 ```bash
 roslaunch jethexa_rl train.launch
 ```
 
-This will start:
-- Gazebo simulation with the JetHexa robot
-- The Python 2 bridge node that interfaces with Gazebo
-
-### 2. Start the RL Training
-
-In a new terminal:
-
+2. **Start Training**:
 ```bash
-cd /path/to/catkin_ws
-source devel/setup.bash
-python3 src/jethexa_rl/scripts/train_ppo.py --train --curriculum
+python3 scripts/train_ppo.py --timesteps 5000000 --curriculum
 ```
 
-Options:
-- `--train`: Start a new training session
-- `--curriculum`: Enable curriculum learning (gradually increasing difficulty)
-- `--timesteps 2000000`: Set the total number of timesteps (default: 1000000)
+3. **Monitor Progress**:
+- Use TensorBoard to track rewards and learning metrics
+- Check terminal output for detailed reward breakdowns
+- Monitor gait exploration through action logging
 
-### 3. Evaluating a Trained Model
+### Evaluation
 
 ```bash
-python3 src/jethexa_rl/scripts/train_ppo.py --evaluate --model /path/to/model.zip
+src/jethexa_rl/scripts/run_training.sh --timesteps 5000000 --curriculum
 ```
 
-## Bridge Communication
+## Monitoring and Debugging
 
-The bridge uses the following ROS topics for communication:
+### TensorBoard Metrics
 
-- From Python 3 (RL) to Python 2 (Gazebo):
-  - `/jethexa_rl/action`: Joint positions to apply
-  - `/jethexa_rl/reset`: Signal to reset the environment
-  - `/jethexa_rl/set_difficulty`: Set the terrain difficulty level
+- Episode rewards
+- Policy loss
+- Value function loss
+- Detailed reward components
+- Action distributions
 
-- From Python 2 (Gazebo) to Python 3 (RL):
-  - `/jethexa_rl/observation`: Robot state observations
-  - `/jethexa_rl/reward`: Reward signal
-  - `/jethexa_rl/done`: Episode termination signal
-  - `/jethexa_rl/info`: Additional episode information
-  - `/jethexa_rl/reset_complete`: Signal that the reset is complete
+### Logged Components
 
-## Troubleshooting
+- Forward/backward movement
+- Stability metrics
+- Energy usage
+- Rotation and lateral deviation
+- Collision proximity
+- Gait type exploration
 
-### ImportError for tf.transformations
+## Current Status
 
-If you encounter this error, use the terrain_generator.py which has a custom quaternion_from_euler implementation.
+The system is implemented with:
+- Functional CPG-RL integration
+- Stable training pipeline
+- Comprehensive reward structure
+- Automated checkpointing
+- Real-time monitoring
 
-### Timing Issues
+Training typically shows:
+1. Initial reward decline as policy unlearns undesired behaviors
+2. Gradual improvement as it learns stable gaits
+3. Convergence to efficient forward locomotion
 
-If observation/response delays occur, you might need to adjust the timeout values in the Python 3 environment.
+## Future Improvements
 
-### ROS Package Path Issues
+- Fine-tune reward weights for more natural movement
+- Implement adaptive curriculum learning
+- Add terrain complexity progression
+- Enhance gait transition smoothness
+- Optimize energy efficiency further
 
-Make sure to properly source your ROS workspace before running either script. 
+## Requirements
+
+- Ubuntu 18.04
+- ROS Melodic
+- Python 2.7 (ROS) and Python 3.6+ (RL)
+- NVIDIA GPU recommended for training
+- Stable-Baselines3 and dependencies 

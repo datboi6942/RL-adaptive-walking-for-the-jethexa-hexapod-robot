@@ -14,14 +14,18 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${GREEN}=== JetHexa RL Training Launcher ===${NC}"
-# --- START: Forceful Cleanup ---
+# --- START: Forceful Cleanup (More Robust) ---
 echo -e "${YELLOW}Attempting to kill previous potentially conflicting processes...${NC}"
 pkill -f gzserver > /dev/null 2>&1
 pkill -f gzclient > /dev/null 2>&1
 pkill -f rosmaster > /dev/null 2>&1
+pkill -f roscore > /dev/null 2>&1 # <-- Added roscore
 pkill -f gym_bridge_ros.py > /dev/null 2>&1
 pkill -f train_ppo.py > /dev/null 2>&1
-sleep 1 # Give processes a moment to die
+pkill -f cpg_service_node.py > /dev/null 2>&1 # <-- Added CPG service node
+# <<< ADDED: Kill nodelet manager if it gets stuck >>>
+pkill -f 'nodelet manager' > /dev/null 2>&1
+sleep 2 # <<< Increased sleep duration slightly >>>
 echo -e "${YELLOW}Cleanup attempt finished.${NC}"
 # --- END: Forceful Cleanup ---
 
@@ -61,15 +65,24 @@ USER_PROVIDED_LOAD_VECNORM=false
 USER_PROVIDED_TIMESTEPS=false
 USER_PROVIDED_CURRICULUM_FLAG=false # Track if --curriculum or --no-curriculum is set
 START_FRESH=false # <<< ADDED: Flag to force starting new training
+DEBUG_FLAG=false # <<< ADDED: Flag to track --debug
+USER_PROVIDED_LR_VALUE=""
 
+# <<< ADDED: Loop to parse arguments >>>
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        gui:=*|headless:=*|paused:=*|world:=*) # Known launch args
-            LAUNCH_ARGS="$LAUNCH_ARGS $1"
+        # --- UPDATED: Handle gui:=false and --gui=false specifically ---
+        gui:=true|--gui) # Handle gui:=true or --gui flag
+            LAUNCH_ARGS="$LAUNCH_ARGS gui:=true"
             shift # past argument
             ;;
-        --gui) # Special handling for simple --gui flag
-            LAUNCH_ARGS="$LAUNCH_ARGS gui:=true"
+        gui:=false|--gui=false) # Handle gui:=false or --gui=false flag
+            LAUNCH_ARGS="$LAUNCH_ARGS gui:=false"
+            shift # past argument
+            ;;
+        # --- END UPDATED ---
+        headless:=*|paused:=*|world:=*) # Other known launch args
+            LAUNCH_ARGS="$LAUNCH_ARGS $1"
             shift # past argument
             ;;
         --load-model)
@@ -102,91 +115,163 @@ while [[ $# -gt 0 ]]; do
                  echo "${RED}Error: --timesteps requires a numeric argument.${NC}" >&2; exit 1
              fi
              ;;
+        --learning-rate)
+             if [[ -n "$2" ]]; then
+                  TRAIN_ARGS_LIST+=("--learning-rate" "$2")
+                  USER_PROVIDED_LR_VALUE="$2" # Store the value
+                  shift # past argument
+                  shift # past value
+             else
+                  echo "${RED}Error: --learning-rate requires a value.${NC}" >&2; exit 1
+             fi
+             ;;
          --curriculum)
              USER_PROVIDED_CURRICULUM_FLAG=true # Mark that user specified something
              # We'll handle adding --curriculum later if needed
              shift # past argument
              ;;
-         --no-curriculum) # Option to explicitly disable curriculum
-             # Do not add --curriculum to args list
-             USER_PROVIDED_CURRICULUM_FLAG=true # Mark that user specified something
-             TRAIN_ARGS_LIST+=("--no-curriculum") # Pass this through
-             shift # past argument
-             ;;
-        --new) # <<< ADDED: Flag to explicitly start fresh
+         --no-curriculum)
+              USER_PROVIDED_CURRICULUM_FLAG=true # Mark that user specified something
+              # Flag that curriculum should NOT be added by default
+              # No specific argument added to TRAIN_ARGS_LIST for this
+              shift # past argument
+              ;;
+         --new)
              START_FRESH=true
              shift # past argument
              ;;
-        *) # Unknown option - assume it's for training script or a typo
-           echo "${YELLOW}Warning: Unknown argument '$1' passed to run_training.sh. Assuming it's for train_ppo.py.${NC}"
-           TRAIN_ARGS_LIST+=("$1")
-           shift # past argument
-           ;;
+        --debug) # <<< ADDED: Handle --debug flag >>>
+             DEBUG_FLAG=true
+             shift # past argument
+             ;;
+        *) # Unknown option - assume it's for train_ppo.py
+            # echo -e "${YELLOW}Warning: Unknown argument '$1' passed to run_training.sh. Assuming it's for train_ppo.py.${NC}"
+            TRAIN_ARGS_LIST+=("$1") # Add unknown arg to training args
+            shift # past argument
+            ;;
     esac
 done
+# <<< END Argument Parsing Loop >>>
 
-# --- Handle --new flag: Remove loading args if present ---
-if [ "$START_FRESH" = true ]; then
-    echo -e "${YELLOW}--new flag detected. Starting fresh training. Ignoring any --load-model or --load-vecnormalize arguments.${NC}"
-    # Filter out load arguments
-    TEMP_ARGS_LIST=()
-    skip_next=false
-    for item in "${TRAIN_ARGS_LIST[@]}"; do
-        if [ "$skip_next" = true ]; then
-            skip_next=false # Skip the value argument
-            continue
-        fi
-        if [[ "$item" == "--load-model" || "$item" == "--load-vecnormalize" ]]; then
-            skip_next=true # Mark the next item (the path) to be skipped
-            continue
-        fi
-        TEMP_ARGS_LIST+=("$item")
-    done
-    TRAIN_ARGS_LIST=("${TEMP_ARGS_LIST[@]}")
-fi
-# --- End --new handling ---
-
-if [ "$USER_PROVIDED_TIMESTEPS" = false ]; then
-    echo -e "${YELLOW}Using default timesteps: $DEFAULT_TIMESTEPS${NC}"
-    TRAIN_ARGS_LIST+=("--timesteps" "$DEFAULT_TIMESTEPS")
-fi
-
-# Default to enabling curriculum unless user explicitly set --no-curriculum
+# Default to curriculum if user didn't specify --curriculum OR --no-curriculum
 if [ "$USER_PROVIDED_CURRICULUM_FLAG" = false ]; then
-     TRAIN_ARGS_LIST+=("--curriculum")
-     echo -e "${YELLOW}No curriculum flag specified, defaulting to --curriculum.${NC}"
+    echo -e "${YELLOW}No curriculum flag specified, defaulting to --curriculum.${NC}"
+    TRAIN_ARGS_LIST+=("--curriculum")
+# Else: user explicitly specified --curriculum or --no-curriculum, respect their choice
+# (If --curriculum, it was handled above. If --no-curriculum, nothing needs to be added.)
 fi
 
-# --- ADD Default loading arguments IF --new is NOT used AND user didn't specify them ---
-LATEST_MODEL_PATH="$CATKIN_WS/ppo_jethexa_3004416_final.zip" # Updated to 2M step model
-LATEST_VECNORM_PATH="$CATKIN_WS/vec_normalize_3004416_final.pkl" # Updated to 2M step vecnormalize
+# <<< MODIFIED: Add --debug to training args if flag was set >>>
+if [ "$DEBUG_FLAG" = true ]; then
+    echo -e "${YELLOW}Debug mode enabled for train_ppo.py.${NC}"
+    TRAIN_ARGS_LIST+=("--debug") # Pass the flag to the python script
+fi
 
+# --- Modified Loading Logic ---
+MODEL_PATH_TO_USE="" # Variable to store the final model path selected
+
+# Determine which model path to use
 if [ "$START_FRESH" = false ]; then
     if [ "$USER_PROVIDED_LOAD_MODEL" = false ]; then
-        if [ -f "$LATEST_MODEL_PATH" ]; then
+        # Find the latest model if user didn't specify one
+        echo -e "${YELLOW}Searching for the latest model file...${NC}"
+        # Look in /catkin_ws first, then in the models directory
+        LATEST_MODEL_PATH=$(ls -t /catkin_ws/ppo_jethexa_*.zip 2>/dev/null | head -n 1)
+        if [ -z "$LATEST_MODEL_PATH" ]; then
+            MODEL_SEARCH_DIR="/catkin_ws/models" # Using absolute path defined earlier
+            if [ -d "$MODEL_SEARCH_DIR" ]; then
+                 LATEST_MODEL_PATH=$(ls -t ${MODEL_SEARCH_DIR}/jethexa_ppo_*/ppo_jethexa_*_steps.zip 2>/dev/null | head -n 1)
+            fi
+        fi
+
+        if [ -n "$LATEST_MODEL_PATH" ] && [ -f "$LATEST_MODEL_PATH" ]; then
             echo -e "${YELLOW}No model specified and --new not used. Defaulting to load latest model: $LATEST_MODEL_PATH${NC}"
             TRAIN_ARGS_LIST+=("--load-model" "$LATEST_MODEL_PATH")
+            MODEL_PATH_TO_USE=$LATEST_MODEL_PATH
         else
-            echo -e "${RED}Warning: Default latest model path not found, cannot load: '$LATEST_MODEL_PATH'${NC}"
+            echo -e "${RED}Warning: No previous model specified or found. Starting training from scratch.${NC}"
+            MODEL_PATH_TO_USE=""
+            START_FRESH=true # Force START_FRESH if no model found
+        fi
+    else
+        # User provided --load-model, find the path they specified in TRAIN_ARGS_LIST
+        for i in "${!TRAIN_ARGS_LIST[@]}"; do
+           if [[ "${TRAIN_ARGS_LIST[$i]}" == "--load-model" ]]; then
+               MODEL_PATH_TO_USE="${TRAIN_ARGS_LIST[i+1]}"
+               if [ ! -f "$MODEL_PATH_TO_USE" ]; then
+                   echo -e "${RED}Error: Specified model file not found: '$MODEL_PATH_TO_USE'${NC}" >&2; exit 1
+               fi
+               echo -e "${YELLOW}Using user-specified model: $MODEL_PATH_TO_USE${NC}"
+               break
+           fi
+        done
+        if [ -z "$MODEL_PATH_TO_USE" ] && [ "$USER_PROVIDED_LOAD_MODEL" = true ]; then
+            echo -e "${RED}Error: --load-model specified but path could not be determined.${NC}" >&2; exit 1
         fi
     fi
+
+    # Now, attempt to find matching VecNormalize ONLY if user didn't specify one
     if [ "$USER_PROVIDED_LOAD_VECNORM" = false ]; then
-        if [ -f "$LATEST_VECNORM_PATH" ]; then
-            echo -e "${YELLOW}No vecnormalize specified and --new not used. Defaulting to load latest vecnormalize: $LATEST_VECNORM_PATH${NC}"
-            TRAIN_ARGS_LIST+=("--load-vecnormalize" "$LATEST_VECNORM_PATH")
+        if [ -n "$MODEL_PATH_TO_USE" ]; then # Check if we have a model path to work with
+            # <<< IMPROVED LOGIC TO EXTRACT TIMESTEP/SUFFIX >>>
+            MODEL_FILENAME=$(basename "$MODEL_PATH_TO_USE" .zip) # Get filename without dir/extension
+            # Try to extract number sequence (timestep or final count) and any suffix
+            # Example: ppo_jethexa_3004416_final -> extract 3004416_final
+            # Example: ppo_jethexa_420000_steps -> extract 420000_steps
+            STEPS_SUFFIX=$(echo "$MODEL_FILENAME" | grep -o '[0-9]\+_[^_]*$')
+
+            MATCHING_VECNORM_PATH=""
+            if [ -n "$STEPS_SUFFIX" ]; then
+                # Construct the expected VecNormalize path based on the extracted part
+                EXPECTED_VECNORM_FILENAME="vec_normalize_${STEPS_SUFFIX}.pkl"
+                # Look for it in the same directory as the model OR in /catkin_ws
+                MODEL_DIR=$(dirname "$MODEL_PATH_TO_USE")
+                if [ -f "${MODEL_DIR}/${EXPECTED_VECNORM_FILENAME}" ]; then
+                    MATCHING_VECNORM_PATH="${MODEL_DIR}/${EXPECTED_VECNORM_FILENAME}"
+                elif [ -f "/catkin_ws/${EXPECTED_VECNORM_FILENAME}" ]; then
+                    MATCHING_VECNORM_PATH="/catkin_ws/${EXPECTED_VECNORM_FILENAME}"
+                fi
+            fi
+            # <<< END IMPROVED LOGIC >>>
+
+            if [ -n "$MATCHING_VECNORM_PATH" ]; then
+                echo -e "${YELLOW}No vecnormalize specified. Found matching vecnormalize for model: $MATCHING_VECNORM_PATH${NC}"
+                TRAIN_ARGS_LIST+=("--load-vecnormalize" "$MATCHING_VECNORM_PATH")
+            else
+                echo -e "${RED}Warning: No explicit vecnormalize specified, and could not find matching vecnormalize file for model '$MODEL_PATH_TO_USE' (tried pattern vec_normalize_${STEPS_SUFFIX}.pkl in model dir and /catkin_ws). Training will use fresh normalization statistics.${NC}"
+            fi
         else
-            echo -e "${RED}Warning: Default latest vecnormalize path not found, cannot load: '$LATEST_VECNORM_PATH'${NC}"
+             # No model path was determined
+             echo -e "${YELLOW}No model path specified or found, skipping VecNormalize loading.${NC}"
         fi
+    else
+         echo -e "${YELLOW}Using user-specified VecNormalize path.${NC}"
     fi
 else
-     echo -e "${YELLOW}--new flag specified, skipping default model loading.${NC}"
+     echo -e "${YELLOW}--new flag specified, skipping default model and VecNormalize loading.${NC}"
 fi
-# --- END Default Loading --- 
+# --- END Modified Loading Logic ---
 
-# <<< ADD Explicit Learning Rate for Fine-tuning >>>
-TRAIN_ARGS_LIST+=("--learning-rate" "3e-5")
-echo -e "${YELLOW}Explicitly setting learning rate for fine-tuning: 3e-5${NC}"
-# <<< END ADD >>>
+# <<< REVISED: Learning Rate Logic >>>
+# Decide which learning rate to USE based on whether we are fine-tuning and if user provided one
+if [ -n "$MODEL_PATH_TO_USE" ]; then # We are fine-tuning
+    if [ -n "$USER_PROVIDED_LR_VALUE" ]; then
+        echo -e "${YELLOW}Fine-tuning: Using user-provided learning rate: $USER_PROVIDED_LR_VALUE${NC}"
+        # The value is already in TRAIN_ARGS_LIST from parsing loop
+    else
+        echo -e "${YELLOW}Fine-tuning: No LR provided, defaulting to 1e-5.${NC}"
+        TRAIN_ARGS_LIST+=("--learning-rate" "1e-5") # Add the default fine-tuning LR
+    fi
+else # Starting new training
+    if [ -n "$USER_PROVIDED_LR_VALUE" ]; then
+        echo -e "${YELLOW}New training: Using user-provided learning rate: $USER_PROVIDED_LR_VALUE${NC}"
+        # The value is already in TRAIN_ARGS_LIST
+    else
+        echo -e "${YELLOW}New training: No LR provided, using default from train_ppo.py.${NC}"
+        # Do NOT add --learning-rate, let the Python script use its default
+    fi
+fi
+# <<< END REVISED LR Logic >>>
 
 # Convert array back to string for logging, properly quoted
 TRAIN_ARGS=$(printf "'%s' " "${TRAIN_ARGS_LIST[@]}")
@@ -199,144 +284,114 @@ GAZEBO_PID=""
 TRAIN_PID=""
 
 # --- MODIFIED Cleanup Function ---
-function cleanup {
-  echo -e "${YELLOW}Caught SIGINT/SIGTERM, shutting down processes...${NC}"
-  # Send SIGINT first for graceful shutdown attempt to process groups
-  if [ -n "$GAZEBO_PID" ] && ps -p $GAZEBO_PID > /dev/null; then
-      echo "Sending SIGINT to roslaunch process group (-$GAZEBO_PID)..."
-      kill -INT -$GAZEBO_PID 2>/dev/null
-  fi
-  if [ -n "$TRAIN_PID" ] && ps -p $TRAIN_PID > /dev/null; then
-       echo "Sending SIGINT to training process group (-$TRAIN_PID)..."
-       kill -INT -$TRAIN_PID 2>/dev/null
-       # Consider direct PID kill as fallback: kill -INT $TRAIN_PID 2>/dev/null
-  fi
+cleanup() {
+    echo -e "\n${RED}Caught signal, cleaning up...${NC}"
+    # Kill the training script first
+    if [ -n "$TRAIN_PID" ]; then
+        echo "Stopping Python 3 Training (PID: $TRAIN_PID)..."
+        kill -SIGINT $TRAIN_PID # Send SIGINT first for graceful shutdown
+        sleep 5 # <<< INCREASED from 2 >>>
+        kill -SIGKILL $TRAIN_PID > /dev/null 2>&1 # Force kill if still running
+    fi
+    # Kill the roslaunch process (which manages Gazebo and bridge)
+    if [ -n "$GAZEBO_PID" ]; then
+        echo "Stopping Gazebo & Bridge (roslaunch PID: $GAZEBO_PID)..."
+        kill -SIGINT $GAZEBO_PID # Send SIGINT first for graceful shutdown
+        sleep 5 # <<< INCREASED from 2 >>>
+        kill -SIGKILL $GAZEBO_PID > /dev/null 2>&1 # Force kill if still running
+    fi
+    # Final redundant cleanup
+    echo "Performing final process cleanup..."
+    pkill -f gzserver > /dev/null 2>&1
+    pkill -f gzclient > /dev/null 2>&1
+    pkill -f rosmaster > /dev/null 2>&1
+    pkill -f roscore > /dev/null 2>&1
+    pkill -f gym_bridge_ros.py > /dev/null 2>&1
+    pkill -f train_ppo.py > /dev/null 2>&1
+    pkill -f cpg_service_node.py > /dev/null 2>&1
+    pkill -f 'nodelet manager' > /dev/null 2>&1
 
-  # Wait a moment for graceful shutdown
-  sleep 2
-
-  # Force kill (SIGKILL) if they are still running
-  echo "Checking if processes need force kill..."
-  if [ -n "$GAZEBO_PID" ] && ps -p $GAZEBO_PID > /dev/null; then
-      echo "Force killing roslaunch process group (-$GAZEBO_PID)..."
-      kill -KILL -$GAZEBO_PID 2>/dev/null
-  fi
-  if [ -n "$TRAIN_PID" ] && ps -p $TRAIN_PID > /dev/null; then
-       echo "Force killing training process group (-$TRAIN_PID)..."
-       kill -KILL -$TRAIN_PID 2>/dev/null
-       # Consider direct PID kill as fallback: kill -KILL $TRAIN_PID 2>/dev/null
-  fi
-
-  # Additional forceful cleanup for common ROS/Gazebo processes
-  echo "Performing additional cleanup (pkill)..."
-  pkill -SIGKILL -f gzserver > /dev/null 2>&1
-  pkill -SIGKILL -f gzclient > /dev/null 2>&1
-  pkill -SIGKILL -f gym_bridge_ros.py > /dev/null 2>&1
-  pkill -SIGKILL -f train_ppo.py > /dev/null 2>&1 # Redundant but safe
-  pkill -SIGKILL -f rosmaster > /dev/null 2>&1
-
-  echo -e "${GREEN}Shutdown complete.${NC}"
-  exit 0 # Exit script after cleanup
+    echo -e "${GREEN}Cleanup finished.${NC}"
+    exit 0
 }
 # --- END MODIFIED Cleanup ---
 
+# Trap signals to call cleanup function
 trap cleanup SIGINT SIGTERM
 
-# Function to run ROS bridge
-run_gazebo() {
-    echo -e "${GREEN}Starting Gazebo and ROS bridge...${NC}"
-    # --- ADDED: Prevent Gazebo online check causing SSL crash ---
-    export IGN_FUEL_OFFLINE=1
-    echo -e "${YELLOW}Setting IGN_FUEL_OFFLINE=1 to prevent potential SSL connection errors.${NC}"
-    # -----------------------------------------------------------
-    # Launch gazebo and bridge in background, passing only launch args
-    roslaunch jethexa_rl train.launch $LAUNCH_ARGS &
-    GAZEBO_PID=$! # Capture roslaunch PID
-    if [ -z "$GAZEBO_PID" ]; then
-        echo -e "${RED}Failed to capture roslaunch PID.${NC}"
-        return 1
-    fi
-    echo -e "${GREEN}Gazebo (roslaunch) started with PID: $GAZEBO_PID${NC}" # Clarified PID source
-    
-    # Wait for Gazebo to initialize
-    echo -e "${YELLOW}Waiting up to 60 seconds for Gazebo and Bridge node (/gym_interface)...${NC}"
-    NODE_CHECK_ATTEMPTS=10 # 10 * 2s = 20s
-    NODE_FOUND=false
-    for (( i=1; i<=NODE_CHECK_ATTEMPTS; i++ )); do
-        # Check if roslaunch process itself is still running
-        if ! ps -p $GAZEBO_PID > /dev/null; then
-             echo -e "${RED}roslaunch process (PID: $GAZEBO_PID) exited prematurely!${NC}"
-             return 1 # roslaunch died, can't continue
-        fi
+# Start Gazebo and ROS bridge in the background
+echo "Starting Gazebo and ROS bridge..."
+export IGN_FUEL_OFFLINE=1 # Prevent potential SSL connection errors
 
-        if rosnode list 2>/dev/null | grep -q "/gym_interface"; then
-            NODE_FOUND=true
-            echo -e "${GREEN}/gym_interface node found!${NC}"
-            break
-        fi
-        echo -e "${YELLOW}  Attempt $i/$NODE_CHECK_ATTEMPTS: /gym_interface node not found yet, waiting 2 seconds...${NC}"
-        sleep 2
-    done
+# Execute roslaunch in the background, passing LAUNCH_ARGS
+# <<< MODIFIED: Use LAUNCH_ARGS correctly >>>
+roslaunch jethexa_rl train.launch $LAUNCH_ARGS &
+GAZEBO_PID=$! # Get the PID of the roslaunch process
+echo "Gazebo (roslaunch) started with PID: $GAZEBO_PID"
 
-    if [ "$NODE_FOUND" = false ]; then
-        echo -e "${RED}/gym_interface node not found after $NODE_CHECK_ATTEMPTS attempts - ROS bridge may not be running properly${NC}"
-        echo -e "${YELLOW}Available nodes:${NC}"
-        rosnode list 2>/dev/null
-        echo -e "${YELLOW}Check the roslaunch output above for errors in gym_bridge_ros.py initialization.${NC}"
-        return 1 # Return error code
-    fi
-    return 0 # Success
-}
+# Wait for Gazebo and the bridge node to be ready
+echo "Waiting up to 60 seconds for Gazebo and Bridge node (/gym_interface)..."
+WAIT_COUNT=0
+MAX_WAIT=30 # Wait up to 60 seconds (30 checks * 2 seconds)
+BRIDGE_READY=false
 
-# --- MODIFIED Function to run training ---
-run_training() {
-    echo -e "${GREEN}Starting RL training in background with args: $TRAIN_ARGS ${NC}"
-    cd "$CATKIN_WS" || { echo "${RED}Failed to cd to $CATKIN_WS${NC}"; return 1; } # Ensure cd succeeds
-    # Pass train args array to the Python script and run in BACKGROUND
-    python3 "$CATKIN_WS/src/jethexa_rl/scripts/train_ppo.py" "${TRAIN_ARGS_LIST[@]}" &
-    TRAIN_PID=$! # Capture the PID of the python3 process
-    if [ -z "$TRAIN_PID" ]; then
-        echo -e "${RED}Failed to capture training script PID.${NC}"
-        return 1
-    fi
-    echo -e "${GREEN}Training script started with PID: $TRAIN_PID${NC}"
-    return 0
-}
-# --- END MODIFIED ---
+# <<< ADDED: Check for Gazebo PID existence before waiting >>>
+while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+     # Check if the roslaunch process is still running
+     if ! kill -0 $GAZEBO_PID > /dev/null 2>&1; then
+          echo -e "${RED}roslaunch process (PID: $GAZEBO_PID) exited prematurely!${NC}"
+          # Try to get exit code if possible (might not work reliably)
+          wait $GAZEBO_PID
+          EXIT_CODE=$?
+          echo "Failed to start Gazebo and ROS bridge properly (Exit code: $EXIT_CODE). Check logs."
+          exit 1
+     fi
 
-# --- Main Execution Flow ---
-run_gazebo
-GAZEBO_EXIT_CODE=$?
+     # Check if the bridge node is listed by rostopic
+     if rostopic list | grep -q '/jethexa_rl/observation'; then # Check for a topic published by the bridge
+          echo -e "${GREEN}Bridge node seems ready (found topic).${NC}"
+          BRIDGE_READY=true
+          break
+     fi
+     # <<< ADDED: Check for /clock topic as a sign Gazebo is running >>>
+     if rostopic list | grep -q '/clock'; then
+          echo "  Attempt $((WAIT_COUNT + 1))/10: Gazebo seems running (found /clock), but bridge node not fully ready yet..."
+     else
+         echo "  Attempt $((WAIT_COUNT + 1))/10: Gazebo or Bridge node not found yet, waiting 2 seconds..."
+     fi
+     sleep 2
+     WAIT_COUNT=$((WAIT_COUNT + 1))
+done
 
-if [ $GAZEBO_EXIT_CODE -eq 0 ]; then
-    echo -e "${GREEN}Gazebo and ROS bridge appear to be running${NC}"
-    run_training
-    TRAINING_START_EXIT_CODE=$?
-
-    if [ $TRAINING_START_EXIT_CODE -ne 0 ] || [ -z "$TRAIN_PID" ]; then
-        echo -e "${RED}Failed to start training script (Exit code: $TRAINING_START_EXIT_CODE). Cleaning up...${NC}"
-        # Cleanup is handled by trap on exit
-        exit 1
-    fi
-
-else
-    echo -e "${RED}Failed to start Gazebo and ROS bridge properly (Exit code: $GAZEBO_EXIT_CODE). Check logs.${NC}"
-    # Cleanup is handled by trap on exit
+if [ "$BRIDGE_READY" = false ]; then
+    echo -e "${RED}Timeout: Gazebo or Bridge node did not become ready within 60 seconds.${NC}"
+    cleanup # Clean up processes
     exit 1
 fi
 
-# --- MODIFIED Wait Logic ---
-# Wait specifically for the training process PID
-echo -e "${YELLOW}Training running (PID: $TRAIN_PID). Waiting for it to complete or for Ctrl+C...${NC}"
-wait $TRAIN_PID
-TRAIN_EXIT_CODE=$?
-echo -e "${YELLOW}Training process (PID: $TRAIN_PID) exited with code $TRAIN_EXIT_CODE.${NC}"
+# <<< ADDED: Short delay to ensure ROS master is fully ready >>>
+sleep 5
 
-# --- End MODIFIED ---
+echo -e "\n${GREEN}DEBUG: About to launch Python 3 script...${NC}"
 
-# Final cleanup is handled by the trap on exit (normal or signaled)
-echo -e "${YELLOW}Script finished or training completed. Cleanup will be handled by exit trap.${NC}"
+# Start Python 3 training script
+echo -e "\n${GREEN}Starting Python 3 Training Script...${NC}"
+# <<< MODIFIED: Run in background and capture PID >>>
+python3 "$CATKIN_WS/src/jethexa_rl/scripts/train_ppo.py" "${TRAIN_ARGS_LIST[@]}" &
+TRAIN_PID=$! # Get the PID of the Python 3 script
+echo "Python 3 Training started with PID: $TRAIN_PID"
 
-# --- REMOVED old wait logic for GAZEBO_PID ---
-# ...
-# --- END REMOVAL --- 
+# <<< ADDED: Wait for both background processes to finish >>>
+# The script will now pause here until either Gazebo/Bridge (roslaunch) or the
+# Python training script exits, or until Ctrl+C is pressed (which triggers cleanup).
+echo "Waiting for Gazebo (PID: $GAZEBO_PID) or Training (PID: $TRAIN_PID) to exit..."
+wait $GAZEBO_PID $TRAIN_PID
+PYTHON3_EXIT_CODE=$? # Capture exit code of whichever process finished first (or wait itself)
+echo -e "${YELLOW}A background process exited (Code: $PYTHON3_EXIT_CODE). Initiating cleanup...${NC}"
+
+# Final cleanup (will be called if wait finishes OR if Ctrl+C is caught by trap)
+cleanup
+
+# Explicit exit at the end (cleanup function also has exit)
+echo "Script finished."
+exit $PYTHON3_EXIT_CODE 

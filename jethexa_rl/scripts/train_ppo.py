@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+print('--- Training script started ---', flush=True)
 """
 JetHexa RL training script using Stable-Baselines3 with a ROS bridge to Gazebo.
 
@@ -364,17 +365,19 @@ class JetHexaROSEnv(gym.Env):
             return self.observation.copy(), -1.0, True, self.info
         
         # --- Apply Smoothing to Joint Positions ---
-        if self.smoothed_joint_positions is None:
-            self.smoothed_joint_positions = joint_positions.copy()
-        else:
-            self.smoothed_joint_positions = self.action_smoothing_alpha * joint_positions + \
-                                         (1 - self.action_smoothing_alpha) * self.smoothed_joint_positions
+        # <<< THIS SMOOTHING IS NOW REDUNDANT as action is sent directly >>>
+        # if self.smoothed_joint_positions is None:
+        #     self.smoothed_joint_positions = joint_positions.copy()
+        # else:
+        #     self.smoothed_joint_positions = self.action_smoothing_alpha * joint_positions + \\
+        #                                  (1 - self.action_smoothing_alpha) * self.smoothed_joint_positions
         
-        # Send the joint positions through ROS
+        # Send the calculated JOINT POSITIONS (not CPG params) through ROS to the bridge
         try:
             action_msg = Float32MultiArray()
-            action_msg.data = self.smoothed_joint_positions.tolist()
-            debug_print(f"Step {self.current_step_count}: Publishing action...")
+            # <<< FIXED: Send the joint_positions calculated by CPG >>>
+            action_msg.data = joint_positions.tolist() 
+            debug_print(f"Step {self.current_step_count}: Publishing action (Joint Positions)...") # Clarified log
             self.action_pub.publish(action_msg)
         except Exception as e:
             debug_print(f"ERROR publishing action in step(): {e}")
@@ -431,15 +434,22 @@ class JetHexaROSEnv(gym.Env):
         self.reset_pub.publish(Bool(True))
         
         # Wait for reset to complete
-        timeout = time.time() + 20.0  # Increased timeout to 20 seconds (was 15)
-        debug_print("Waiting for reset to complete...")
-        while not self.reset_complete and time.sleep(0.01):
-            pass
-        
-        if not self.reset_complete:
-            debug_print("WARNING: Reset timed out")
+        timeout = time.time() + 90.0  # <<< INCREASED timeout significantly (was 45.0?)
+        debug_print("Waiting for reset to complete (timeout 90s)...") # <<< Updated log message
+        # <<< MODIFIED: Use rospy.is_shutdown() check in loop >>>
+        while not self.reset_complete and time.time() < timeout and not rospy.is_shutdown():
+            # debug_print(f"  Waiting... reset_complete={self.reset_complete}, time_left={timeout - time.time():.1f}s") # Optional detailed wait log
+            time.sleep(0.1) # Check less frequently
+
+        # <<< ADDED: Check for ROS shutdown after loop >>>
+        if rospy.is_shutdown():
+             debug_print("WARNING: ROS shutdown detected during reset wait.")
+             # Return current observation, but maybe signal an issue?
+             # For now, just return observation, the training loop might handle the shutdown.
+        elif not self.reset_complete:
+            debug_print("WARNING: Reset timed out after 90 seconds.")
         else:
-            debug_print("Reset completed successfully")
+            debug_print("Reset completed successfully.")
         
         # Return the initial observation
         with self.lock:
@@ -569,8 +579,8 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
     # Note: Removed rostopic check - communication handled by bridge.
 
     # Create log and base model directories
-    log_dir = "logs"
-    base_model_dir = "models" # Renamed to avoid confusion
+    log_dir = "/catkin_ws/logs" # Use absolute path
+    base_model_dir = "/catkin_ws/models" # Use absolute path
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(base_model_dir, exist_ok=True)
     debug_print(f"Base log directory set to: {os.path.abspath(log_dir)}") # Added absolute path log
@@ -673,21 +683,24 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
                      if isinstance(env, VecNormalize):
                           env.obs_rms = vecnorm_loaded.obs_rms
                           env.ret_rms = vecnorm_loaded.ret_rms
-                          env.training = False # Set to inference mode
+                          # Keep training=True and norm_reward=True for fine-tuning
+                          env.training = True 
+                          env.norm_reward = True 
+                          # Keep norm_obs=True (already set during load or init)
                           env.norm_obs = True # Ensure observation normalization is active
-                          env.norm_reward = False # Usually false for inference
-                          debug_print("Successfully force-loaded and applied VecNormalize statistics.")
+                          debug_print("Successfully force-loaded VecNormalize. SET for continued fine-tuning (training=True, norm_reward=True).")
                      else:
                           debug_print("Warning: Environment is not VecNormalize wrapped. Cannot apply loaded stats.")
                      del vecnorm_loaded # Clean up temporary wrapper
                 except Exception as e:
                      debug_print(f"Error force-loading VecNormalize: {e}. Proceeding without applying stats.")
-            else:
-                 # Ensure VecNormalize wrapper (if present) is in inference mode even if not loading
-                 if isinstance(env, VecNormalize):
-                      env.training = False
-                      env.norm_reward = False
-                      debug_print("Running in inference mode (VecNormalize training=False).")
+            # --- REMOVED Inference mode settings previously here ---
+            # else:
+            #      # Ensure VecNormalize wrapper (if present) is in inference mode even if not loading
+            #      if isinstance(env, VecNormalize):
+            #           env.training = False
+            #           env.norm_reward = False
+            #           debug_print("Running in inference mode (VecNormalize training=False).")
         except Exception as e:
             debug_print(f"ERROR loading PPO Model: {e}")
             import traceback
@@ -919,6 +932,7 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
              debug_print(f"Error during final save or close in finally block: {e}")
 
     # Return model only on successful completion (i.e., if no exception occurred in the try block)
+    debug_print(">>> train_ppo function finished successfully, returning model.") # ADDED DEBUG
     return model
 
 
@@ -1008,18 +1022,21 @@ if __name__ == "__main__":
 
     model = None # Initialize model to None
     try:
-        # RE-ADD: Initialize ROS node for this Python 3 process
         # Use a unique name and anonymous=True
         debug_print("Initializing ROS node for Python 3 script...")
-        rospy.init_node('jethexa_rl_training_py3', anonymous=True)
-        debug_print("ROS node for Python 3 script initialized.")
+        # Explicitly set use_sim_time to False for this node to avoid init errors
+        # rospy.set_param('/use_sim_time', False)
+        rospy.init_node('jethexa_rl_training_py3', anonymous=True) # Try running without init_node # <<< UNCOMMENTED >>>
+        debug_print("ROS node for Python 3 script initialized.") # <<< UNCOMMENTED >>>
         
         # Create model directory if it doesn't exist (Still useful)
         model_dir = "models"
         os.makedirs(model_dir, exist_ok=True)
         
         # Train the model
+        debug_print(">>> Entering train_ppo function call <<<") # ADDED DEBUG
         model = train_ppo(args, total_timesteps=args.timesteps, curriculum=args.curriculum)
+        debug_print(f">>> Exited train_ppo function call. Model is: {'VALID' if model else 'None'} <<<") # ADDED DEBUG
 
     except KeyboardInterrupt:
         debug_print("\nCtrl+C detected in main block. Exiting cleanly...")
@@ -1030,4 +1047,5 @@ if __name__ == "__main__":
     # REMOVED: finally block that tried to shut down ROS (Keep Removed)
 
     # Added simple finish message here instead
-    debug_print("Python script execution finished.") 
+    debug_print("Python script execution finished.") # Keep this one
+    print("--- Training script reached end of main block ---", flush=True) # ADDED FINAL PRINT

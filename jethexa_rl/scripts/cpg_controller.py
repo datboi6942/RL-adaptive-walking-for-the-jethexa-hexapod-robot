@@ -134,15 +134,11 @@ class CPGController:
         joint_angles = np.zeros((self.n_legs, self.n_joints_per_leg))
         
         for i in range(self.n_legs):
-            phase_rad = self.phase[i] + self.phase_offsets[i]
-            phase_rad = phase_rad % (2 * np.pi) # Ensure phase is [0, 2*pi]
+            phase_rad = (self.phase[i] + self.phase_offsets[i]) % (2 * np.pi)
 
             # Shoulder: side-to-side movement
-            coxa_angle_offset = self.amplitudes[i, 0] * np.sin(phase_rad)
-            if i >= 3: # Right side legs (RF, RM, RR)
-                joint_angles[i, 0] = self.joint_bias[i, 0] - coxa_angle_offset
-            else: # Left side legs (LF, LM, LR)
-                joint_angles[i, 0] = self.joint_bias[i, 0] + coxa_angle_offset
+            joint_angles[i, 0] = self.joint_bias[i, 0] + \
+                                 self.amplitudes[i, 0] * np.sin(phase_rad)
 
             # --- Smoothed Hip Control --- 
             # Use cosine: Max lift near pi/2 (mid-swing), min lift near 3pi/2 (mid-stance)
@@ -150,7 +146,7 @@ class CPGController:
                  lift_amplitude_scale = 1.0
             else: # Stance phase
                  lift_amplitude_scale = 0.1 # Reduce vertical movement during stance
-            hip_angle = self.joint_bias[i, 1] - self.amplitudes[i, 1] * lift_amplitude_scale * np.cos(phase_rad)
+            hip_angle = self.joint_bias[i, 1] + self.amplitudes[i, 1] * lift_amplitude_scale * np.cos(phase_rad)
             joint_angles[i, 1] = hip_angle
             # --- End Smoothed Hip Control --- 
 
