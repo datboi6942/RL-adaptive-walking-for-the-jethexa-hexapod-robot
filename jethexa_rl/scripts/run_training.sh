@@ -67,6 +67,7 @@ USER_PROVIDED_CURRICULUM_FLAG=false # Track if --curriculum or --no-curriculum i
 START_FRESH=false # <<< ADDED: Flag to force starting new training
 DEBUG_FLAG=false # <<< ADDED: Flag to track --debug
 USER_PROVIDED_LR_VALUE=""
+DOMAIN_RANDOMIZATION="false" # Default to false if not specified
 
 # <<< ADDED: Loop to parse arguments >>>
 while [[ $# -gt 0 ]]; do
@@ -136,7 +137,7 @@ while [[ $# -gt 0 ]]; do
               # No specific argument added to TRAIN_ARGS_LIST for this
               shift # past argument
               ;;
-         --new)
+        --new)
              START_FRESH=true
              shift # past argument
              ;;
@@ -144,6 +145,14 @@ while [[ $# -gt 0 ]]; do
              DEBUG_FLAG=true
              shift # past argument
              ;;
+        --dr)
+            DOMAIN_RANDOMIZATION="true"
+            shift # past argument
+            ;;
+        --no-dr)
+            DOMAIN_RANDOMIZATION="false"
+            shift # past argument
+            ;;
         *) # Unknown option - assume it's for train_ppo.py
             # echo -e "${YELLOW}Warning: Unknown argument '$1' passed to run_training.sh. Assuming it's for train_ppo.py.${NC}"
             TRAIN_ARGS_LIST+=("$1") # Add unknown arg to training args
@@ -166,6 +175,9 @@ if [ "$DEBUG_FLAG" = true ]; then
     echo -e "${YELLOW}Debug mode enabled for train_ppo.py.${NC}"
     TRAIN_ARGS_LIST+=("--debug") # Pass the flag to the python script
 fi
+
+# Add domain_randomization arg to LAUNCH_ARGS
+LAUNCH_ARGS="$LAUNCH_ARGS domain_randomization:=$DOMAIN_RANDOMIZATION"
 
 # --- Modified Loading Logic ---
 MODEL_PATH_TO_USE="" # Variable to store the final model path selected

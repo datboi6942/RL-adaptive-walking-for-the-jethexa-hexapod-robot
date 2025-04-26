@@ -719,7 +719,7 @@ def train_ppo(args, total_timesteps=25000, curriculum=True):
     # Create checkpoint callback pointing to the run-specific directory
     # --- USE Custom SaveVecNormalizeCheckpointCallback ---
     checkpoint_callback = SaveVecNormalizeCheckpointCallback( # NEW custom callback
-        save_freq=500000, # Changed from 20000 to 500k
+        save_freq=100000, # Changed from 500k to 100k
         save_path=run_specific_model_dir,
         name_prefix="ppo_jethexa",
         verbose=1 # Add verbose logging for the callback itself

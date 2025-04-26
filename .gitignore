@@ -1,2 +1,8 @@
 models/
 jethexa_rl/scripts/__pycache__
+logs/
+jethexa_rl/logs/
+jethexa_rl/data/
+jethexa_rl/models/
+jethexa_rl/results/
+
