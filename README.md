@@ -1,6 +1,6 @@
 # JetHexa Adaptive Locomotion Training
 
-This repository contains a complete setup for training a JetHexa hexapod robot to walk using reinforcement learning in a Gazebo simulation environment, with the ability to deploy trained models to the physical robot running on a Jetson Nano.
+This repository contains a complete setup for training a JetHexa hexapod robot to walk using a bio-inspired Central Pattern Generator (CPG) approach combined with reinforcement learning in a Gazebo simulation environment, with the ability to deploy trained models to the physical robot running on a Jetson Nano.
 
 ## Overview
 
@@ -8,7 +8,29 @@ The system consists of two main ROS packages:
 
 1. **jethexa_description**: Contains the URDF robot description, meshes, and basic configuration needed to simulate JetHexa in Gazebo.
 
-2. **jethexa_gym_env**: Provides the Gym-compatible reinforcement learning environment that wraps around the Gazebo simulation, with reward functions optimized for locomotive behavior.
+2. **jethexa_gym_env**: Provides the Gym-compatible reinforcement learning environment that wraps around the Gazebo simulation, implementing a two-layer CPG network for locomotion control:
+   - First layer: Generates basic locomotion patterns
+   - Second layer: Controls limb behavior for environmental adaptation
+   - RL-based parameter tuning for CPG optimization
+
+## Training Approach
+
+The training methodology follows a bio-inspired approach:
+
+1. **CPG Network Structure**:
+   - Two-layer architecture for pattern generation and adaptation
+   - Symmetrical structure reduces parameter space
+   - Only two key parameters need to be learned iteratively
+
+2. **Learning Process**:
+   - Initial phase: Basic tripod gait pattern generation
+   - Intermediate phase: Stability and forward motion optimization
+   - Advanced phase: Environmental adaptation and efficiency
+
+3. **Expected Timeline**:
+   - Basic Stability: 2-3M timesteps
+   - Consistent Forward Locomotion: 4-6M timesteps
+   - Efficient Gait: 6-8M timesteps
 
 ## Requirements
 
@@ -92,6 +114,22 @@ Edit `jethexa_gym_env/config/reward_params.yaml` to tune the rewards:
 - **energy_usage**: Penalties for excessive joint movements
 - **foot_contact**: Rewards for appropriate foot contact patterns
 - **smoothness**: Rewards for smooth joint transitions
+- **cpg_coordination**: Rewards for coordinated CPG pattern execution
+
+## Training Progress Monitoring
+
+Monitor training progress through:
+
+1. **Episode Statistics**:
+   - `ep_rew_mean`: Average episode reward
+   - `ep_len_mean`: Average episode length
+   - `fps`: Training speed
+
+2. **Success Indicators**:
+   - Positive `ep_rew_mean`
+   - Stable `ep_len_mean` (not constantly hitting step limit)
+   - Consistent forward motion
+   - Reduced frequency of falls
 
 ## Python 3 with ROS Melodic
 

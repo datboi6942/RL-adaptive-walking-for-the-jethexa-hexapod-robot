@@ -317,8 +317,10 @@ class JetHexaROSEnv(gym.Env):
     def _reset_complete_callback(self, msg):
         """Callback for receiving reset completion signal from the ROS bridge."""
         with self.lock:
-            self.reset_complete = bool(msg.data)
-            # debug_print(f"Received reset complete signal: {self.reset_complete}") # COMMENTED OUT - Too verbose
+            received_value = bool(msg.data)
+            self.reset_complete = received_value
+            # <<< ADDED: Log when the signal is received and its value >>>
+            debug_print(f"!!! _reset_complete_callback received: {received_value} !!!")
     
     def step(self, action):
         debug_print(f"Step {self.current_step_count}: Entered step method.")
@@ -363,14 +365,6 @@ class JetHexaROSEnv(gym.Env):
             debug_print(traceback.format_exc())
             # Return a failed state
             return self.observation.copy(), -1.0, True, self.info
-        
-        # --- Apply Smoothing to Joint Positions ---
-        # <<< THIS SMOOTHING IS NOW REDUNDANT as action is sent directly >>>
-        # if self.smoothed_joint_positions is None:
-        #     self.smoothed_joint_positions = joint_positions.copy()
-        # else:
-        #     self.smoothed_joint_positions = self.action_smoothing_alpha * joint_positions + \\
-        #                                  (1 - self.action_smoothing_alpha) * self.smoothed_joint_positions
         
         # Send the calculated JOINT POSITIONS (not CPG params) through ROS to the bridge
         try:
@@ -446,68 +440,34 @@ class JetHexaROSEnv(gym.Env):
              debug_print("WARNING: ROS shutdown detected during reset wait.")
              # Return current observation, but maybe signal an issue?
              # For now, just return observation, the training loop might handle the shutdown.
-        elif not self.reset_complete:
-            debug_print("WARNING: Reset timed out after 90 seconds.")
+        
+        # <<< MODIFIED: Explicitly check for completion before returning obs >>>
+        if not self.reset_complete:
+            debug_print("WARNING: Reset timed out or failed after 90 seconds.") # Updated message
+            # Return None to indicate failure
+            return None 
         else:
             debug_print("Reset completed successfully.")
-        
-        # Return the initial observation
-        with self.lock:
+            # Return the initial observation ONLY if reset was successful
+            with self.lock:
+                # Ensure observation was actually received after reset
+                if not self.obs_received:
+                    debug_print("WARNING: Reset complete, but no observation received yet. Waiting briefly...")
+                    # Short wait for the first observation post-reset
+                    obs_timeout = time.time() + 5.0 
+                    while not self.obs_received and time.time() < obs_timeout and not rospy.is_shutdown():
+                        time.sleep(0.05)
+                    if not self.obs_received:
+                        debug_print("ERROR: Still no observation after reset. Returning None.")
+                        return None
+                    debug_print("Observation received post-reset.")
+                
             return self.observation.copy()
     
     def set_difficulty(self, level):
         """Set the terrain difficulty level (0-4)."""
         debug_print(f"Setting difficulty to level {level}")
         self.difficulty_pub.publish(Int32(level))
-
-
-def plot_training_results(log_dir):
-    """Plot training rewards and episode lengths from monitor files."""
-    import pandas as pd
-    
-    # Load monitor files
-    monitor_files = [os.path.join(log_dir, file) 
-                     for file in os.listdir(log_dir) 
-                     if file.startswith('monitor')]
-    
-    if not monitor_files:
-        print("No monitor files found in", log_dir)
-        return
-    
-    # Load the data
-    data_frames = []
-    for file in monitor_files:
-        try:
-            df = pd.read_csv(file, skiprows=1)
-            data_frames.append(df)
-        except:
-            print(f"Error reading {file}")
-    
-    if not data_frames:
-        print("No valid data found")
-        return
-    
-    # Concatenate all dataframes
-    data = pd.concat(data_frames)
-    
-    # Plot rewards
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.plot(data['r'])
-    plt.title('Episode Rewards')
-    plt.xlabel('Episode')
-    plt.ylabel('Reward')
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(data['l'])
-    plt.title('Episode Lengths')
-    plt.xlabel('Episode')
-    plt.ylabel('Length (steps)')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'training_progress.png'))
-    plt.close()
 
 
 # --- Custom Callback to Save VecNormalize ---
@@ -566,7 +526,7 @@ class SaveVecNormalizeCheckpointCallback(CheckpointCallback):
 # --- End Custom Callback ---
 
 
-def train_ppo(args, total_timesteps=1000000, curriculum=True):
+def train_ppo(args, total_timesteps=25000, curriculum=True):
     """
     Train a PPO agent for the JetHexa robot.
     
@@ -759,7 +719,7 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
     # Create checkpoint callback pointing to the run-specific directory
     # --- USE Custom SaveVecNormalizeCheckpointCallback ---
     checkpoint_callback = SaveVecNormalizeCheckpointCallback( # NEW custom callback
-        save_freq=20000,
+        save_freq=500000, # Changed from 20000 to 500k
         save_path=run_specific_model_dir,
         name_prefix="ppo_jethexa",
         verbose=1 # Add verbose logging for the callback itself
@@ -873,27 +833,6 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
         debug_print("--- Single model.learn() call completed --- ")
         # --- END Single learn() call --- 
 
-        # --- COMMENTED OUT: Original while loop --- 
-        # debug_print("STEP 10a: --- Entering main training loop --- ")
-        # while timesteps_so_far < total_timesteps:
-            # --- Curriculum Difficulty Update ---
-            # ... (commented out) ... 
-            # --- End Curriculum Update ---
-
-            # Determine steps for this iteration: model's n_steps or remaining steps
-            # ... (commented out) ...
-
-            # print("@@@ REACHED CODE AFTER LEARN @@@", flush=True) # Simplest possible check
-            
-            # Update total timesteps AFTER learn() completes
-            # timesteps_so_far = model.num_timesteps
-            # debug_print(f"Current total timesteps: {timesteps_so_far}/{total_timesteps}") # Keep as debug for now
-
-            # --- Precise Saving Logic ---
-            # ... (commented out) ...
-            # --- End Saving Logic ---
-        # --- END COMMENTED OUT: Original while loop ---
-
         # Save the final model to the run-specific directory
         debug_print("Training loop section complete, saving final model")
         # Ensure final save uses the absolute latest timestep count
@@ -903,7 +842,7 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
         
         # Plot training results
         debug_print("Plotting training results")
-        plot_training_results(log_dir)
+        # plot_training_results(log_dir)
         
         debug_print("Training complete!")
 
@@ -934,56 +873,6 @@ def train_ppo(args, total_timesteps=1000000, curriculum=True):
     # Return model only on successful completion (i.e., if no exception occurred in the try block)
     debug_print(">>> train_ppo function finished successfully, returning model.") # ADDED DEBUG
     return model
-
-
-def run_and_visualize_policy(model_path, vec_normalize_path=None, episodes=3):
-    """
-    Run and visualize a trained policy.
-    
-    Args:
-        model_path: Path to the saved model
-        vec_normalize_path: Path to the saved VecNormalize object
-        episodes: Number of episodes to run
-    """
-    # Create environment
-    env = JetHexaROSEnv()
-    
-    # Load VecNormalize stats if available
-    if vec_normalize_path and os.path.exists(vec_normalize_path):
-        env = VecNormalize.load(vec_normalize_path, DummyVecEnv([lambda: env]))
-        # Don't update the normalization statistics during evaluation
-        env.training = False
-        env.norm_reward = False
-    else:
-        env = DummyVecEnv([lambda: env])
-    
-    # Load the trained model
-    model = PPO.load(model_path, env=env)
-    
-    # Run the policy
-    for episode in range(episodes):
-        obs = env.reset()
-        done = False
-        total_reward = 0
-        step = 0
-        
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
-            total_reward += reward
-            step += 1
-            
-            print(f"Episode {episode+1}, Step {step}, Reward: {reward:.2f}, Done: {done}")
-            if step % 10 == 0:
-                print(f"  Distance: {info[0]['distance_traveled']:.2f}, Falls: {info[0]['falls']}")
-            
-            # Small delay for visualization
-            time.sleep(0.01)
-        
-        print(f"Episode {episode+1} finished with total reward: {total_reward:.2f}")
-    
-    # Close the environment
-    env.close()
 
 
 if __name__ == "__main__":
@@ -1024,8 +913,6 @@ if __name__ == "__main__":
     try:
         # Use a unique name and anonymous=True
         debug_print("Initializing ROS node for Python 3 script...")
-        # Explicitly set use_sim_time to False for this node to avoid init errors
-        # rospy.set_param('/use_sim_time', False)
         rospy.init_node('jethexa_rl_training_py3', anonymous=True) # Try running without init_node # <<< UNCOMMENTED >>>
         debug_print("ROS node for Python 3 script initialized.") # <<< UNCOMMENTED >>>
         

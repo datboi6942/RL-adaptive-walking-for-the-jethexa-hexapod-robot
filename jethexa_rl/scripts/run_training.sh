@@ -223,7 +223,7 @@ if [ "$START_FRESH" = false ]; then
             MATCHING_VECNORM_PATH=""
             if [ -n "$STEPS_SUFFIX" ]; then
                 # Construct the expected VecNormalize path based on the extracted part
-                EXPECTED_VECNORM_FILENAME="vec_normalize_${STEPS_SUFFIX}.pkl"
+                EXPECTED_VECNORM_FILENAME="ppo_jethexa_${STEPS_SUFFIX}_vecnormalize.pkl"
                 # Look for it in the same directory as the model OR in /catkin_ws
                 MODEL_DIR=$(dirname "$MODEL_PATH_TO_USE")
                 if [ -f "${MODEL_DIR}/${EXPECTED_VECNORM_FILENAME}" ]; then
@@ -238,7 +238,7 @@ if [ "$START_FRESH" = false ]; then
                 echo -e "${YELLOW}No vecnormalize specified. Found matching vecnormalize for model: $MATCHING_VECNORM_PATH${NC}"
                 TRAIN_ARGS_LIST+=("--load-vecnormalize" "$MATCHING_VECNORM_PATH")
             else
-                echo -e "${RED}Warning: No explicit vecnormalize specified, and could not find matching vecnormalize file for model '$MODEL_PATH_TO_USE' (tried pattern vec_normalize_${STEPS_SUFFIX}.pkl in model dir and /catkin_ws). Training will use fresh normalization statistics.${NC}"
+                echo -e "${RED}Warning: No explicit vecnormalize specified, and could not find matching vecnormalize file for model '$MODEL_PATH_TO_USE' (tried pattern ppo_jethexa_${STEPS_SUFFIX}_vecnormalize.pkl in model dir and /catkin_ws). Training will use fresh normalization statistics.${NC}"
             fi
         else
              # No model path was determined
