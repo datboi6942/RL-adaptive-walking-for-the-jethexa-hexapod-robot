@@ -124,6 +124,30 @@ class JetHexaGymBridge:
             self.prev_action = None
             self.link_poses = {} # <<< Initialize link poses dictionary
             
+            # --- NEW: Initialize reward tracking for 2-second window ---
+            self.reward_history = {
+                'forward': [],
+                'backward': [],
+                'stability': [],
+                'angular_velocity': [],
+                'height': [],
+                'energy': [],
+                'lateral': [],
+                'rotation': [],
+                'orientation': [],
+                'action_rate': [],
+                'collision': [],
+                'survival': [],
+                'fall': [],
+                'dynamic_collision': [],
+                'bounce': [],
+                'dynamic_energy': [],
+                'total': []
+            }
+            self.last_reward_log_time = rospy.get_time()
+            self.reward_log_interval = 2.0  # Log every 2 seconds
+            # --- END NEW ---
+            
             # Connect to simulation services
             logging.info("Bridge: Connecting to Gazebo services...")
             try:
@@ -716,6 +740,50 @@ class JetHexaGymBridge:
             self.terrain_generator.set_difficulty(self.current_difficulty)
             self.terrain_generator.reset_terrain()
 
+    def _track_reward_components(self, components):
+        """Track individual reward components and output them periodically."""
+        if not hasattr(self, '_last_reward_log_time'):
+            self._last_reward_log_time = rospy.get_time()
+            self._reward_components = {
+                'forward_reward': 0.0,
+                'backward_penalty': 0.0,
+                'stability_reward': 0.0,
+                'angular_vel_penalty': 0.0,
+                'height_reward': 0.0,
+                'energy_penalty': 0.0,
+                'lateral_penalty': 0.0,
+                'rotation_penalty': 0.0,
+                'orientation_penalty': 0.0,
+                'action_rate_penalty': 0.0,
+                'proximity_penalty': 0.0,
+                'survival_reward': 0.0,
+                'fall_penalty': 0.0,
+                'dyn_col_term': 0.0,
+                'dyn_bnc_term': 0.0,
+                'dyn_en_term': 0.0
+            }
+            return
+
+        # Update components
+        self._reward_components.update(components)
+
+        # Check if it's time to log (every 2 seconds)
+        current_time = rospy.get_time()
+        if current_time - self._last_reward_log_time >= 2.0:  # Changed from 1.0 to 2.0 seconds
+            # Calculate total reward
+            total_reward = sum(self._reward_components.values())
+            
+            # Log reward components
+            rospy.loginfo("\n=== Reward Components (Last 2 Seconds) ===")  # Updated message
+            rospy.loginfo("Total Reward: {:.3f}".format(total_reward))
+            for component, value in self._reward_components.items():
+                if abs(value) > 1e-6:  # Only show non-zero components
+                    rospy.loginfo("{:20s}: {:8.3f}".format(component, value))
+            rospy.loginfo("=====================================\n")
+            
+            # Reset timer
+            self._last_reward_log_time = current_time
+
     def compute_reward(self, action=None, dt=0.0):
         """
         Calculate reward based on achieving stable forward locomotion.
@@ -806,9 +874,9 @@ class JetHexaGymBridge:
         current_pos = np.array(self.robot_pose[:3])
         roll, pitch, yaw = self.robot_pose[3], self.robot_pose[4], self.robot_pose[5]
         
-        # Log roll and pitch values to check if they're causing falls
+        # Log roll and pitch values to check if they're causing falls - use throttled logging
         if abs(roll) > 0.5 or abs(pitch) > 0.5:
-            rospy.logwarn("High roll/pitch detected: roll={:.2f}, pitch={:.2f}".format(roll, pitch))
+            rospy.logwarn_throttle(5, "High roll/pitch detected: roll={:.2f}, pitch={:.2f}".format(roll, pitch))
 
         if not hasattr(self, 'prev_orientation'): # Initialize if first step after reset
             self.prev_orientation = (roll, pitch, yaw)
@@ -917,7 +985,7 @@ class JetHexaGymBridge:
         # 10. Termination Penalty (Check for fall)
         # This check determines if the fall penalty should be applied in this step's reward
         is_fallen = abs(roll) > FALL_THRESHOLD_ROLL_PITCH or abs(pitch) > FALL_THRESHOLD_ROLL_PITCH
-        fall_penalty_term = FALL_PENALTY if is_fallen else 0.0 # Uses FALL_PENALTY
+        fall_penalty_term = FALL_PENALTY if is_fallen else 0.0
         
         # Log if the agent has fallen
         if is_fallen:
@@ -951,6 +1019,77 @@ class JetHexaGymBridge:
             dyn_bnc_term + # Zero
             dyn_en_term  # Zero
         )
+
+        # --- NEW: Track reward components for 2-second window ---
+        # Store current reward components
+        reward_components = {
+            'forward': forward_reward,
+            'backward': backward_penalty,
+            'stability': STABILITY_WEIGHT * stability_reward,
+            'angular_velocity': ANGULAR_VEL_WEIGHT * angular_vel_penalty,
+            'height': HEIGHT_WEIGHT * height_reward,
+            'energy': ENERGY_WEIGHT * energy_penalty,
+            'lateral': LATERAL_PENALTY_WEIGHT * lateral_penalty,
+            'rotation': ROTATION_PENALTY_WEIGHT * rotation_penalty,
+            'orientation': ORIENTATION_PENALTY_WEIGHT * orientation_penalty,
+            'action_rate': ACTION_RATE_WEIGHT * action_rate_penalty,
+            'collision': proximity_penalty,
+            'survival': SURVIVAL_REWARD,
+            'fall': fall_penalty_term,
+            'dynamic_collision': dyn_col_term,
+            'bounce': dyn_bnc_term,
+            'dynamic_energy': dyn_en_term,
+            'total': reward
+        }
+        
+        # Add current reward components to history
+        for component, value in reward_components.items():
+            self.reward_history[component].append(value)
+        
+        # Check if it's time to log (every 2 seconds)
+        current_time = rospy.get_time()
+        if current_time - self.last_reward_log_time >= self.reward_log_interval:
+            # Calculate average reward components over the 2-second window
+            avg_reward_components = {}
+            for component, values in self.reward_history.items():
+                if values:  # Check if there are any values
+                    avg_reward_components[component] = sum(values) / len(values)
+                else:
+                    avg_reward_components[component] = 0.0
+            
+            # --- MODIFIED: Calculate percentages based on sum of absolute values ---
+            total_avg_reward = avg_reward_components.get('total', 0.0)
+            # Calculate sum of absolute values of all components (excluding total)
+            sum_abs_components = sum(abs(v) for k, v in avg_reward_components.items() if k != 'total')
+            
+            reward_percentages = {}
+            if sum_abs_components > 1e-6:  # Avoid division by zero
+                for k, v in avg_reward_components.items():
+                    if k != 'total':
+                        # Percentage represents the component's contribution to the total magnitude
+                        # The sign indicates whether it was positive or negative contribution
+                        reward_percentages[k] = (v / sum_abs_components) * 100
+            else:
+                # If sum of abs is zero, all components are zero
+                reward_percentages = {k: 0.0 for k in avg_reward_components.keys() if k != 'total'}
+            # --- END MODIFICATION ---
+            
+            # Log average reward components
+            rospy.loginfo("\n=== Avg Reward Components (Last {:.1f}s) | Total: {:.2f} ===".format(
+                self.reward_log_interval, total_avg_reward))
+            # Sort components by absolute percentage contribution for clarity
+            sorted_components = sorted(reward_percentages.items(), key=lambda item: abs(item[1]), reverse=True)
+            for component, percentage in sorted_components:
+                # Show components contributing more than 0.1% magnitude
+                if abs(percentage) > 0.1:
+                    rospy.loginfo("{:>20}: {:6.1f}% ({:+.3f})".format(component, percentage, avg_reward_components[component]))
+            rospy.loginfo("="*30 + "\n")
+            
+            # Reset reward history and update last log time
+            for component in self.reward_history:
+                self.reward_history[component] = []
+            self.last_reward_log_time = current_time
+        # --- END NEW ---
 
         # Update metrics at the end of the method
         self.metrics['forward_velocities'].append(forward_movement)

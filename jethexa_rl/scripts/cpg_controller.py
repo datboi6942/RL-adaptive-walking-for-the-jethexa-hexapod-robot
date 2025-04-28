@@ -3,6 +3,7 @@
 
 import numpy as np
 # import matplotlib.pyplot as plt # Removed dependency for Python 2 compatibility
+import rospy
 
 class CPGController:
     """
@@ -29,10 +30,11 @@ class CPGController:
         # Joint angle bias (standing pose)
         self.joint_bias = np.zeros((n_legs, n_joints_per_leg))
         # Default standing pose for JetHexa
-        # Shoulder joints (wider stance)
-        coxa_bias_magnitude = 0.1 
-        self.joint_bias[0:3, 0] = coxa_bias_magnitude  # Left legs (positive bias)
-        self.joint_bias[3:6, 0] = -coxa_bias_magnitude # Right legs (negative bias)
+        # Shoulder joints (wider stance) - REMOVED ASYMMETRY
+        # coxa_bias_magnitude = 0.1 
+        # self.joint_bias[0:3, 0] = coxa_bias_magnitude  # Left legs (positive bias)
+        # self.joint_bias[3:6, 0] = -coxa_bias_magnitude # Right legs (negative bias)
+        self.joint_bias[:, 0] = 0.0 # Set shoulder bias to zero for all legs
         # Hip joints (adjusting upward lift)
         self.joint_bias[:, 1] = 0.6  # Reduced Hip Forward Bias
         # Knee joints (adjusting bend)
@@ -64,36 +66,84 @@ class CPGController:
             params: Numpy array of parameters with shape (n_params,) where
                    n_params = 2 + n_legs + n_legs*n_joints_per_leg
                    [global_freq, gait_type, leg_phases, joint_amplitudes]
+                   **Assumes input parameters are normalized between 0 and 1.**
         """
         expected_params = 2 + self.n_legs + self.n_legs * self.n_joints_per_leg
         assert len(params) == expected_params, \
             "Expected {} parameters, got {}".format(expected_params, len(params))
         
+        # --- MODIFIED: Reduced Logging ---
+        # Only log at debug level and only the first few parameters
+        rospy.logdebug("CPG Params (first 5): {}".format(np.round(params[:5], 3)))
+        
+        # --- ADD SCALING FROM [0, 1] to physical ranges ---
+        MIN_FREQ = 0.5  # Hz
+        MAX_FREQ = 2.5  # Hz
+        MAX_PHASE_ADJUST = np.pi / 8.0 # Max adjustment in radians (+/-)
+        MIN_AMP = 0.1   # Radians
+        MAX_AMP = 0.8   # Radians (Adjust based on joint limits/desired motion)
+        # --- END SCALING RANGES ---
+
         # Global frequency (Hz) - controls overall speed
-        global_freq = params[0]
-        self.frequencies = np.ones(self.n_legs) * np.clip(global_freq, 0.2, 2.0)
+        # Scale param[0] from [0, 1] to [MIN_FREQ, MAX_FREQ]
+        scaled_global_freq = MIN_FREQ + params[0] * (MAX_FREQ - MIN_FREQ)
+        self.frequencies = np.ones(self.n_legs) * scaled_global_freq # Clip is redundant now
         
         # Gait type parameter (0: tripod, 1: wave, between: mixed)
         gait_type = np.clip(params[1], 0, 1)
         
+        # Select base phase offsets based on gait type
         if gait_type < 0.33:  # Tripod gait
             self.phase_offsets = np.array([0, np.pi, 0, np.pi, 0, np.pi])
-        elif gait_type < 0.66:  # Tetrapod gait
-            self.phase_offsets = np.array([0, 2*np.pi/3, 4*np.pi/3, 0, 2*np.pi/3, 4*np.pi/3])
+        elif gait_type < 0.66:  # Tetrapod gait (Example - adjust if needed)
+             self.phase_offsets = np.array([0, np.pi/2, np.pi, 3*np.pi/2, 0, np.pi/2]) # Example Tetrapod
         else:  # Wave gait
             self.phase_offsets = np.array([0, np.pi/3, 2*np.pi/3, np.pi, 4*np.pi/3, 5*np.pi/3])
         
         # Fine-tune phase offsets with individual leg adjustments
-        phase_adjustments = params[2:2+self.n_legs]
-        for i in range(self.n_legs):
-            self.phase_offsets[i] += phase_adjustments[i] * 0.2  # Small adjustments
+        phase_adjust_params = params[2:2+self.n_legs]
+        # Scale phase_adjust_params from [0, 1] to [-MAX_PHASE_ADJUST, +MAX_PHASE_ADJUST]
+        # Shift [0, 1] to [-0.5, 0.5], then scale by 2*MAX_PHASE_ADJUST
+        scaled_phase_adjustments = (phase_adjust_params - 0.5) * (2 * MAX_PHASE_ADJUST)
+        self.phase_offsets += scaled_phase_adjustments # Apply scaled adjustments
         
         # Set joint amplitudes (controls step size and leg movement)
         amp_params = params[2+self.n_legs:]
-        self.amplitudes = amp_params.reshape(self.n_legs, self.n_joints_per_leg)
+        # Scale amp_params from [0, 1] to [MIN_AMP, MAX_AMP]
+        scaled_amplitudes = MIN_AMP + amp_params * (MAX_AMP - MIN_AMP)
+        self.amplitudes = scaled_amplitudes.reshape(self.n_legs, self.n_joints_per_leg)
         
-        # Clip to reasonable ranges (increased upper bound)
-        self.amplitudes = np.clip(self.amplitudes, 0.1, 1.4)
+        # --- MODIFIED: Enforce Symmetry with Minimal Logging ---
+        rospy.logdebug("Enforcing CPG parameter symmetry at set_gait_params...")
+        
+        # Average Phase Adjustments (modifies self.phase_offsets which includes adjustments)
+        # Note: Base offsets are already symmetric based on gait type logic above
+        avg_phase_adj_03 = (self.phase_offsets[0] + self.phase_offsets[3]) / 2.0
+        self.phase_offsets[0] = avg_phase_adj_03
+        self.phase_offsets[3] = avg_phase_adj_03
+        
+        avg_phase_adj_14 = (self.phase_offsets[1] + self.phase_offsets[4]) / 2.0
+        self.phase_offsets[1] = avg_phase_adj_14
+        self.phase_offsets[4] = avg_phase_adj_14
+        
+        avg_phase_adj_25 = (self.phase_offsets[2] + self.phase_offsets[5]) / 2.0
+        self.phase_offsets[2] = avg_phase_adj_25
+        self.phase_offsets[5] = avg_phase_adj_25
+        
+        # Average Amplitudes (modifies self.amplitudes)
+        for joint_idx in range(self.n_joints_per_leg):
+            # LF / RF (Leg 0 / Leg 3)
+            avg_amp_03 = (self.amplitudes[0, joint_idx] + self.amplitudes[3, joint_idx]) / 2.0
+            self.amplitudes[0, joint_idx] = avg_amp_03
+            self.amplitudes[3, joint_idx] = avg_amp_03
+            # LM / RM (Leg 1 / Leg 4)
+            avg_amp_14 = (self.amplitudes[1, joint_idx] + self.amplitudes[4, joint_idx]) / 2.0
+            self.amplitudes[1, joint_idx] = avg_amp_14
+            self.amplitudes[4, joint_idx] = avg_amp_14
+            # LR / RR (Leg 2 / Leg 5)
+            avg_amp_25 = (self.amplitudes[2, joint_idx] + self.amplitudes[5, joint_idx]) / 2.0
+            self.amplitudes[2, joint_idx] = avg_amp_25
+            self.amplitudes[5, joint_idx] = avg_amp_25
     
     def reset(self):
         """Reset the internal state of the CPG oscillators."""
@@ -233,12 +283,12 @@ if __name__ == "__main__":
     n_params = 2 + 6 + 6*3  # global_freq, gait_type, leg_phases, joint_amplitudes
     params = np.random.uniform(0, 1, n_params)
     
-    # Set gait parameters
+    # Set gait parameters (includes initial symmetry enforcement on params)
     controller.set_gait_params(params)
     
     # Visualize the resulting gait
     # controller.visualize_gait() # Commented out due to dependency
     
-    # Flatten to match the JetHexa controller format
+    # Run update once
     joint_angles = controller.update(0.05)
     print("Joint angles:", joint_angles) 

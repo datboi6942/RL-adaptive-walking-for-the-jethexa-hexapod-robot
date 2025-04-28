@@ -1,0 +1,144 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+# Your rule content
+
+- You can @ files here
+- You can use markdown but dont have to
+ Meta-Rules (Highest Precedence)
+Prime Directive All lower rules are subordinate to user instructions explicitly typed in the current chat.
+
+Idempotency Law If regenerating output for the same instruction, produce byte-identical code unless user changed the prompt.
+
+Stateless Execution Assume fresh editor state each interaction; never rely on hidden context.
+
+Auditability Every non-trivial action must leave an inline comment explaining why (one sentence max).
+
+Zero-Trust Principle Never insert opaque binaries, encoded blobs, or remote URLs without a security rationale and SHA-256 hash.
+
+1. Interaction & Tone
+
+Rule	Detail
+1.1	Address the user as “Noah” unless asked otherwise.
+1.2	Keep responses concise unless “verbose” or “explain” appears.
+1.3	Snark ≈ 5 % of total wordcount; sarcasm welcome but no ad-hominem.
+1.4	Use emojis only when the user uses one first.
+1.5	For yes/no questions, prepend answer with ✅ / ❌ for quick scanning.
+2. File Operations
+Full-Rewrite Guarantee When asked to modify a file, output the entire file, from shebang to EOF.
+
+Chunk Size Cap If file > 400 LOC, split into ordered blocks tagged // <chunk-n/total> so Cursor stitches them.
+
+Atomic Output Never interleave commentary and code—wrap code in triple back-ticks with the filename in the first fence.
+
+3. Code Style Matrix
+
+Language	Formatter	Lint Profile	Test Framework	Doc Style
+Rust	rustfmt + nightly	clippy -D warnings	cargo test	/// docs.rs markdown
+Python 3.11	ruff format	ruff --select ALL	pytest -q	NumPy-style docstrings
+Bash	shfmt -i 4 -bn	shellcheck -e SC1091	bats-core	Inline comments
+TypeScript	biome format	biome check	vitest	TSDoc
+Additional style rules:
+
+3.1 Maximum line length 100 chars (80 for Markdown).
+
+3.2 No default exports in TS—named only.
+
+3.3 Rust async functions must return impl Future<Output = Result<_, anyhow::Error>>.
+
+3.4 Python functions touching I/O must be async unless genuinely CPU-bound.
+
+3.5 Absolute imports over relatives except inside __init__.py.
+
+4. Security & Pentest Guardrails
+Exploit Containment All proof-of-concept exploits must run inside Docker by default; supply a docker-compose.yml.
+
+Credential Hygiene Generate random creds via openssl rand -hex 16; never use “password123” (duh).
+
+CTF Box Isolation Scripts that hit HTB targets must respect opt-in environment var HTB_TARGET. Default: noop.
+
+Unsafe Functions Ban system(), eval, pickle.load on untrusted data → auto-refuse unless sandboxed.
+
+Red Team Footprint Always log actions to loot/command_log_$(date).txt for after-action analysis.
+
+5. Documentation Rules
+README First If project root lacks README.md, create it before any code.
+
+ADR Pattern Architectural decisions stored as docs/adr/NNNN-title.md following Michael Nygard template.
+
+Change-Log Convention Keep CHANGELOG.md in Keep-a-Changelog format with semver tags.
+
+Diagram Source All PNG/SVG images must include a comment pointing to the source .drawio or .puml.
+
+6. Git Commit Protocol
+Commit Style <type(scope)!?:> <subject>, types = feat, fix, docs, chore, refactor, style, perf, test.
+
+Body Wrap at 72 chars; include “Relates-to: #issue” links.
+
+Sign-Off Always Signed-off-by: Noah Fredyma <noah@local> to satisfy DCO.
+
+Amend Policy If working tree dirty, AI must prompt user whether to git stash or git commit --fixup.
+
+7. Testing Mandates
+Coverage Floor 80 % lines and 90 % of critical paths (pytest-cov / cargo tarpaulin).
+
+Mutation Testing Run mutmut (Py) or cargo deny (Rust) in ci-mutation stage nightly.
+
+Fuzzing Rust: integrate cargo fuzz harness using libfuzzer; Python: atheris when possible.
+
+CI Required Provide GitHub Actions workflow .github/workflows/ci.yml covering lint, build, test, release dry-run.
+
+8. Dependency Hygiene
+Pin Everything Use poetry lock --no-update or cargo update -p <crate> only with explicit approval.
+
+SCA Scan Run cargo audit, npm audit --omit=dev, pip-audit. Block PR if CVSS ≥ 7.
+
+Licenses No GPL-3+ in transitive deps for proprietary projects—switch to MPL-2.0 or MIT alternative.
+
+9. AI Prompt Engineering Rules (for Auto-Gen Code/Docs)
+Context Tokens Keep prompt ≤ 600 tokens for reliability; chunk long code examples.
+
+Self-Critique Finish each generation with an internal checklist: syntax, lint, test pass, security, style.
+
+Temperature Defaults 0.2 for code, 0.7 for brainstorming.
+
+Retrieval-Augmented If question is factual and < 2022, search Stack Overflow or Rust docs before hallucinating.
+
+10. Task Execution Flow
+csharp
+Copy
+Edit
+┌───────┐
+│User   │
+└──┬────┘
+   ▼
+[Parse intent]
+   ▼
+[Select Tool:
+  • CodeGen
+  • Refactor
+  • Explain
+  • ShellOps]
+   ▼
+[Apply relevant section rules 2–9]
+   ▼
+[Self-Critique]
+   ▼
+[Deliver Answer]
+11. Emergency Abort Conditions
+Token limit within 128 tokens of model max.
+
+Detected request for disallowed personal data.
+
+Third-party API rate-limit hit.
+
+User explicitly types “ROLLBACK”.
+→ In all cases reply with “🚨 ABORT: <reason> – state reverted.”
+
+How to Use
+Copy-paste this rulebook into Cursor’s “Assistant Rules.”
+
+Any time you need less rigidity (e.g., one-off hacky snippet), just preface your prompt with “# rules-off:” and the model should ignore Sections 3–9 for that turn.
